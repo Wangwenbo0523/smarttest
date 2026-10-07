@@ -1,5 +1,7 @@
 # SmartTest
 
+[![质量门禁](https://github.com/Wangwenbo0523/smarttest/actions/workflows/quality-gate.yml/badge.svg)](https://github.com/Wangwenbo0523/smarttest/actions/workflows/quality-gate.yml)
+
 **接口契约驱动的测试用例智能生成与失败归因平台**
 
 输入一份 OpenAPI 设计契约，自动产出可执行、可维护的 pytest 测试套件，
