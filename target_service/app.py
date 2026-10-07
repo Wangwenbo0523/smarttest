@@ -40,7 +40,7 @@ CONTRACT_PATH = Path(__file__).resolve().parent / "contract" / "openapi.yaml"
 # 靶场模式：
 #   buggy（默认）= 保留注入缺陷，用于验证「能不能发现问题」
 #   fixed        = 已修复版本，用于验证「是不是误报」
-# 同一套用例跑两遍，buggy 报 3 个缺陷、fixed 报 0 个，才能证明结果可信。
+# 同一套用例跑两遍，buggy 报 4 个缺陷、fixed 报 0 个，才能证明结果可信。
 TARGET_MODE = os.environ.get("SMARTTEST_TARGET_MODE", "buggy").strip().lower()
 IS_FIXED = TARGET_MODE == "fixed"
 

@@ -27,24 +27,10 @@ for _stream in (sys.stdout, sys.stderr):
 
 import httpx  # noqa: E402
 
-def _load_local_env() -> None:
-    """读取 .env.local（已在 .gitignore 中），方便本地配模型密钥。
+from smarttest.localenv import load_local_env  # noqa: E402
 
-    不引入 python-dotenv：就十几行的事，没必要多一个依赖。
-    用 setdefault 而不是覆盖，保证命令行显式传入的环境变量优先级更高。
-    """
-    env_file = ROOT / ".env.local"
-    if not env_file.exists():
-        return
-    for line in env_file.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip())
-
-
-_load_local_env()
+# 模型密钥等本地配置来自 .env.local（已在 .gitignore 中），与演示服务共用同一份加载逻辑
+load_local_env(ROOT)
 
 from smarttest.dataprovider import DataProvider  # noqa: E402
 from smarttest.generator import PytestGenerator  # noqa: E402

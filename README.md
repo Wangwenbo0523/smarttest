@@ -65,7 +65,9 @@ SmartTest 把这件事拆成三层，每层用最适合的方式做：
 
 ```bash
 pip install -r requirements.txt
-python run_demo.py
+
+python run_demo.py        # 命令行：跑一遍完整流水线并打印质量报告
+python run_demo_app.py    # 演示界面：浏览器里跑同一条流水线（默认 http://127.0.0.1:8500）
 ```
 
 流水线：
@@ -79,7 +81,7 @@ python run_demo.py
 产物：
 
 ```
-build/generated_tests/test_contract_generated.py   # 24 条契约用例（参数化，可读可 review）
+build/generated_tests/test_contract_generated.py   # 25 条契约用例（参数化，可读可 review）
 build/generated_tests/test_business_generated.py   # 4 条业务用例（人工模板）
 build/generated_tests/test_scenarios_generated.py  # 2 个跨接口场景（数据驱动）
 build/generated_tests/scenarios.json               # 场景数据，与代码分离
@@ -90,9 +92,47 @@ build/reports/eval_report.md                       # 生成质量评测报告
 
 ---
 
+## 演示界面
+
+`python run_demo_app.py` 起一个本地 Web 界面。它跑的是**同一条流水线**，
+不是另外写的展示层：`demo/pipeline.py` 复用了 `smarttest` 的全部组件，
+`tools/verify_demo.py` 把「界面与命令行结果一致」做成了 CI 门禁。
+
+![概览](docs/screenshot-overview.png)
+
+界面把工具内部到底做了什么全部摊开：
+
+| 页签 | 看什么 |
+|---|---|
+| 概览 | 7 步流水线、用例设计方法分布、字段级覆盖 |
+| 设计契约 | 从 OpenAPI 解析出的接口、入参约束、响应字段 |
+| 生成用例 | 每条用例的期望码与 `design_basis`，可按设计方法筛选 |
+| 业务场景 | 采纳的场景（含每步的捕获与断言）与被拒绝的场景及原因 |
+| 执行结果 | junit 结果明细，失败用例可展开堆栈 |
+| 缺陷归因 | 归并后的缺陷清单 + 「其余失败」的分类证据 |
+| 生成代码 | 渲染出来的 pytest 源码与 `scenarios.json` |
+| 修复版对比 | 一键跑 buggy / fixed 两次，直接看零误报自证 |
+
+![业务场景](docs/screenshot-scenarios.png)
+
+![修复版对比](docs/screenshot-compare.png)
+
+界面提供「缺陷版 / 修复版」与「语义增强 · 模型 / 规则」两组切换，
+也支持用 URL 参数直达某个状态，便于分享演示链接：
+
+```
+http://127.0.0.1:8500/?auto=compare&mode=buggy&llm=0      # 直接跑一键对比
+http://127.0.0.1:8500/?auto=1&mode=buggy&llm=1&tab=defects # 真实模型跑完停在缺陷页
+```
+
+演示界面刻意没有引入 Streamlit / pandas：用已装栈的 FastAPI + 静态页实现，
+`pip install -r requirements.txt` 之后就能跑，不会卡在依赖上。
+
+---
+
 ## CI 质量门禁
 
-每次 push / PR 都会跑四道门禁（`.github/workflows/quality-gate.yml`）：
+每次 push / PR 都会跑五道门禁（`.github/workflows/quality-gate.yml`）：
 
 | 门禁 | 命令 | 卡住什么 |
 |---|---|---|
@@ -100,10 +140,14 @@ build/reports/eval_report.md                       # 生成质量评测报告
 | 零误报自证 | `python run_demo.py --target-mode fixed --expect-defects 0` | 修复后仍报出的假阳性 |
 | 生成质量 | `python run_evals.py --min-recall 100 --min-precision 100` | 覆盖率或精确率回退 |
 | 语义层通路 | `python tools/verify_semantic.py` | 幻觉拦截或降级机制失效 |
+| 演示界面 | `python tools/verify_demo.py` | 界面与命令行结果不一致、接口结构缺字段 |
 
-这四道门禁互为补充：**只测「能不能发现问题」会漏掉误报，只测「零误报」会漏掉漏报**。
+这五道门禁互为补充：**只测「能不能发现问题」会漏掉误报，只测「零误报」会漏掉漏报**。
 只有两边都卡住，报告才可信 —— 一个永远抓不到 bug 的工具，和一个永远在报假警的工具，
 在团队里的结局是一样的：没人看。
+
+门禁全部走**规则推导通路**（CI 里不配 API Key），保证确定性可复现；
+真实模型通路的结果会波动，只用于人工观察，不进回归基线。
 
 门禁本身也做过反向测试：把期望值改错会以非 0 退出，不会「绿」得莫名其妙。
 每次运行的质量报告可从 Actions 的 `quality-reports` 构件下载。
@@ -113,9 +157,11 @@ build/reports/eval_report.md                       # 生成质量评测报告
 ## 架构
 
 ```
-                    run_demo.py  （编排）
-                          │
-   ┌──────────────────────┼───────────────────────┐
+         run_demo.py（命令行）      run_demo_app.py（演示界面）
+                     │                    │
+                     └──── demo/pipeline.py（同一条流水线）────┘
+                                  │
+   ┌──────────────────────┬───────┴───────────────┐
    ▼                      ▼                       ▼
 parser.py             rules.py              semantic/
 OpenAPI → IR      JSON Schema → 用例    契约 → 跨接口场景
@@ -143,6 +189,8 @@ OpenAPI → IR      JSON Schema → 用例    契约 → 跨接口场景
 | `smarttest/triage.py` | **失败归因**：五分类 + 缺陷模式库 + 根因归并 |
 | `smarttest/metrics.py` | 覆盖率与缺陷度量，输出 Markdown 报告 |
 | `evals/ground_truth.yaml` | 人工标注的必测清单，评测的基准 |
+| `demo/pipeline.py` | 把编排抽成可复用函数，命令行与演示界面共用 |
+| `demo/server.py` | 演示服务：FastAPI 接口 + 静态页面，零额外依赖 |
 
 ---
 
@@ -335,6 +383,21 @@ schema 里推导不出来的用例补了出来；代价是上面这 9 类问题�
 > 三是评测集：人工标注一份必测清单，算召回率和精确率，目前都是 100%。
 > 归因里还把「用例问题」单独拆成一类，这个数越低越好。
 
+**Q：为什么还要做一个演示界面？**
+
+> 因为测试工具最大的落地障碍不是能力，是信任 —— 开发不信任你报的缺陷，
+> 你就得把「这条缺陷是哪条规则、依据契约的哪一句、命中哪条用例」摊开来给他看，
+> 光给一份 Markdown 报告不够直观。
+> 界面上我把生成用例、被拒绝的场景、归因证据全部开放出来，
+> 并且做了一键对比：同一套用例打在缺陷版和修复版靶场上，
+> 缺陷数从 4 降到 0 —— 这个画面比任何解释都有说服力。
+>
+> 实现上有一点是我特意坚持的：界面必须复用 `run_demo.py` 的同一条流水线。
+> 演示层另写一套逻辑，演示就成了表演，证明不了工具本身可用。
+> 所以我把编排抽成 `demo/pipeline.py` 供两边共用，
+> 又写了 `tools/verify_demo.py` 把「界面与命令行结论一致」做成了 CI 门禁。
+> 界面本身用 FastAPI + 静态页，没引 Streamlit，避免演示先卡在装依赖上。
+
 **Q：这个项目最有价值的一次发现是什么？**
 
 > 是我们用评测集把自己的覆盖缺口找出来的那次。第一轮评测显示召回率 91.3%，
@@ -380,6 +443,11 @@ schema 里推导不出来的用例补了出来；代价是上面这 9 类问题�
   真实模型即使 `temperature=0` 也不能当成可复现的测试基线。
 - **模型提升的是场景数量，不是缺陷数量**。契约层的规则引擎已经决定召回上限，
   模型没有多报出一个缺陷（都是 4 个）；它的价值在语义场景维度（10 vs 2）。
+- **真实模型的缺陷数不是恒定的**：9 次真实模型跑测里有 8 次报 4 个缺陷、1 次报 5 个，
+  多出的那条来自模型生成的场景，规则推导覆盖不到同一处行为。两次的假阳性都是 0。
+  这也是门禁坚持走规则推导通路的原因 —— 演示界面里看到的模型结果只用于观察。
+- **演示界面用 FastAPI + 静态页**，没有引入 Streamlit：演示要能一键跑起来，
+  不该先卡在依赖安装上。代价是图表得手写 CSS，没有现成的交互组件。
 
 ---
 
@@ -387,6 +455,6 @@ schema 里推导不出来的用例补了出来；代价是上面这 9 类问题�
 
 1. ~~用真实模型跑一轮语义增强，对比规则推导的场景质量~~ 已完成（见「真实模型实测」）
 2. 把质量门禁推上 GitHub Actions，PR 触发回归 + 评测跑分
-3. Allure 报告 + Streamlit Demo 界面
+3. ~~Demo 界面~~ 已完成（`python run_demo_app.py`，见「演示界面」）；剩余 Allure 报告
 4. 测试数据按需造数，替换静态字典
 5. 场景层补上枚举/错误码之外的断言能力（集合、排序、耗时）

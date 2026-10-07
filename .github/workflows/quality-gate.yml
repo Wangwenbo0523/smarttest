@@ -49,6 +49,11 @@ jobs:
       - name: 语义增强层通路与幻觉拦截
         run: python tools/verify_semantic.py
 
+      # 这一条是「演示界面是不是另写一套」：真把演示服务拉起来走 HTTP，
+      # 断言界面拿到的数据与命令行结论一致。同样不需要 API Key。
+      - name: 演示界面通路（界面与流水线一致）
+        run: python tools/verify_demo.py
+
       - name: 上传质量报告
         if: always()
         uses: actions/upload-artifact@v4

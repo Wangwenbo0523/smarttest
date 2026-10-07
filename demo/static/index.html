@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SmartTest · 接口契约驱动的测试用例智能生成与失败归因</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">ST</div>
+      <div class="brand-text">
+        <h1>SmartTest</h1>
+        <p>接口契约驱动的测试用例智能生成与失败归因平台</p>
+      </div>
+    </div>
+    <div class="controls">
+      <div class="seg" id="mode-seg">
+        <button class="active" data-mode="buggy">缺陷版靶场</button>
+        <button data-mode="fixed">修复版靶场</button>
+      </div>
+      <div class="seg" id="llm-seg">
+        <button class="active" data-llm="1">语义增强 · 模型</button>
+        <button data-llm="0">语义增强 · 规则</button>
+      </div>
+      <button id="btn-run" class="btn primary">开始执行</button>
+      <button id="btn-compare" class="btn ghost">一键对比</button>
+    </div>
+  </header>
+
+  <div id="envbar" class="envbar">正在检查靶场与模型配置…</div>
+
+  <main>
+    <section id="metrics" class="metrics"></section>
+    <section id="verdict" class="verdict hidden"></section>
+    <nav id="tabs" class="tabs"></nav>
+    <section id="panel" class="panel">
+      <div class="empty">点击右上角「开始执行」，跑一次完整流水线。</div>
+    </section>
+  </main>
+
+  <div id="overlay" class="overlay hidden">
+    <div class="overlay-card">
+      <div class="spinner"></div>
+      <h2 id="overlay-title">正在执行流水线</h2>
+      <p class="overlay-hint">拉取契约 → 生成用例 → 语义增强 → 渲染代码 → 执行 → 失败归因</p>
+      <div id="overlay-log" class="overlay-log"></div>
+      <div class="timer" id="overlay-timer">0.0s</div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
