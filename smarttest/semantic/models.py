@@ -34,6 +34,24 @@ class ScenarioStep(BaseModel):
     )
     expect_status: int = Field(..., description="期望状态码，必须是契约中声明过的")
 
+    @field_validator("capture")
+    @classmethod
+    def _normalize_capture(cls, value: dict[str, str]) -> dict[str, str]:
+        """capture 的语义是「变量名 -> JSONPath」，但模型经常写反。
+
+        实测 DeepSeek 输出了 {"$.order_id": "order_id"}，结果变量名变成了
+        "$.order_id"，后面 {{order_id}} 永远解析不出来，整条场景报废。
+        这种方向性错误可以安全纠正：JSONPath 一定以 $ 开头。
+        """
+        normalized: dict[str, str] = {}
+        for key, target in (value or {}).items():
+            key, target = str(key), str(target)
+            if key.startswith("$") and not target.startswith("$"):
+                normalized[target] = key
+            else:
+                normalized[key] = target
+        return normalized
+
     @field_validator("operation_id")
     @classmethod
     def _operation_id_not_blank(cls, value: str) -> str:
@@ -50,6 +68,19 @@ class ScenarioCase(BaseModel):
     rationale: str = Field(..., description="设计依据，如 idempotency:same_key")
     source: str = Field(default="llm", description="rule 或 llm")
     steps: list[ScenarioStep] = Field(..., description="按顺序执行，2-8 步")
+
+    @field_validator("rationale")
+    @classmethod
+    def _rationale_machine_readable(cls, value: str) -> str:
+        """rationale 会被归因模块拿去匹配缺陷模式库，必须是「类别:子类」格式。
+
+        实测模型会写成中文长句，那样归因只能落到「契约不符」兜底分支，
+        报告里也会显示一大段说明当标题。这里做一次归一，保证下游可用。
+        """
+        value = (value or "").strip()
+        if ":" in value and " " not in value.split(":", 1)[0]:
+            return value
+        return "scenario:llm_generated"
 
     @field_validator("steps")
     @classmethod

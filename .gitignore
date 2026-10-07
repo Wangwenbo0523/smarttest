@@ -14,3 +14,7 @@ build/
 .idea/
 .DS_Store
 Thumbs.db
+
+# 本地密钥，绝不提交
+.env
+.env.*

@@ -6,7 +6,7 @@
 生成方式 : 模型/规则产出「数据」，由本解释器确定性执行。
            模型只能引用契约里已存在的 operationId，无法编造接口。
 {% if degraded_reason %}
-注意：模型不可用，已降级为规则推导。原因：{{ degraded_reason }}
+注意：{{ degraded_reason }}
 {% endif %}
 """
 import json
@@ -20,13 +20,21 @@ SCENARIOS = json.loads(
     Path(__file__).with_name("scenarios.json").read_text(encoding="utf-8")
 )
 
-_VAR_PATTERN = re.compile(r"\{\{(\w+)\}\}")
+# 同时接受 {% raw %}{{var}}{% endraw %} 和 ${var}：提示词已经要求统一用前者，
+# 但模型不听话是常态 —— 运行期读得宽容一点，比让整条链路崩掉划算。
+_VAR_PATTERN = re.compile(r"\{\{\s*(\w+)\s*\}\}|\$\{\s*(\w+)\s*\}")
+
+
+def _marker(kind, scenario):
+    return f"[kind={kind}][case_id={scenario['scenario_id']}][basis={scenario['rationale']}]"
 
 
 def _resolve(value, variables):
-    """把 {{变量}} 替换成前面步骤捕获到的值。"""
+    """把 {% raw %}{{变量}} / ${变量}{% endraw %} 替换成前面步骤捕获到的值。"""
     if isinstance(value, str):
-        return _VAR_PATTERN.sub(lambda m: str(variables.get(m.group(1), m.group(0))), value)
+        return _VAR_PATTERN.sub(
+            lambda m: str(variables.get(m.group(1) or m.group(2), m.group(0))), value
+        )
     if isinstance(value, dict):
         return {k: _resolve(v, variables) for k, v in value.items()}
     if isinstance(value, list):
@@ -34,48 +42,85 @@ def _resolve(value, variables):
     return value
 
 
+def _has_unresolved(value):
+    """替换完还残留 {% raw %}{{...}} / ${...}{% endraw %}，说明变量压根没被捕获过。"""
+    if isinstance(value, str):
+        return _VAR_PATTERN.search(value) is not None
+    if isinstance(value, dict):
+        return any(_has_unresolved(k) or _has_unresolved(v) for k, v in value.items())
+    if isinstance(value, list):
+        return any(_has_unresolved(v) for v in value)
+    return False
+
+
 def _dig(payload, path):
-    """极简 JSONPath：只支持 $.a.b 这种写法。"""
+    """极简 JSONPath，只支持 $.a.b。
+
+    容错：模型经常写成 body.order_id —— 响应体本身就是 body，
+    这一层前缀直接去掉，否则会把它当成真的字段去找。
+    """
+    parts = [p for p in path.lstrip("$").lstrip(".").split(".") if p]
+    if len(parts) > 1 and parts[0] in ("body", "response", "data") and parts[1] in payload:
+        parts = parts[1:]
+
     current = payload
-    for part in path.lstrip("$").lstrip(".").split("."):
-        if not part:
-            continue
+    for part in parts:
         if not isinstance(current, dict) or part not in current:
-            raise KeyError(f"响应中找不到字段 {path}")
+            raise KeyError(f"响应中找不到字段 {path}（实际可用的顶层字段: {list(payload)[:8]}）")
         current = current[part]
     return current
+
+
+def _run_step(client, scenario, step, variables, index):
+    path = _resolve(step["path"], variables)
+    body = _resolve(step.get("body"), variables)
+    headers = _resolve(step.get("headers") or {}, variables)
+
+    # 变量没解析出来还硬发请求，只会得到一个莫名其妙的 404，
+    # 然后被误判成「前置数据不存在」——把生成器的 bug 藏起来。
+    # 所以这里直接判死，并打上 kind=generator 标记交给归因。
+    if _has_unresolved(path) or _has_unresolved(body) or _has_unresolved(headers):
+        raise AssertionError(
+            f"{_marker('generator', scenario)} 第 {index} 步存在未解析的变量引用: "
+            f"path={path} body={body}；生成侧变量捕获有问题，属于用例问题"
+        )
+
+    resp = client.request(step["method"], BASE_URL + path, json=body, headers=headers)
+
+    assert resp.status_code == step["expect_status"], (
+        f"{_marker('business', scenario)} 第 {index} 步 {step['operation_id']} "
+        f"期望 {step['expect_status']} 实际 {resp.status_code} | {resp.text[:200]}"
+    )
+
+    try:
+        payload = resp.json()
+    except Exception:
+        return
+
+    for name, json_path in (step.get("capture") or {}).items():
+        variables[name] = _dig(payload, json_path)
+
+    for json_path, expected in (step.get("expect_body") or {}).items():
+        actual = _dig(payload, json_path)
+        wanted = _resolve(expected, variables)
+        assert str(actual) == str(wanted), (
+            f"{_marker('business', scenario)} 第 {index} 步 {json_path} 期望 {wanted} 实际 {actual}"
+        )
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=[s["scenario_id"] for s in SCENARIOS])
 def test_scenario(client, scenario):
     variables = {}
-    prefix = f"[kind=business][case_id={scenario['scenario_id']}][basis={scenario['rationale']}]"
 
     for index, step in enumerate(scenario["steps"], 1):
-        url = BASE_URL + _resolve(step["path"], variables)
-        resp = client.request(
-            step["method"],
-            url,
-            json=_resolve(step.get("body"), variables),
-            headers=_resolve(step.get("headers") or {}, variables),
-        )
-
-        assert resp.status_code == step["expect_status"], (
-            f"{prefix} 第 {index} 步 {step['operation_id']} 期望 {step['expect_status']} "
-            f"实际 {resp.status_code} | {resp.text[:200]}"
-        )
-
         try:
-            payload = resp.json()
-        except Exception:
-            continue
-
-        for name, json_path in (step.get("capture") or {}).items():
-            variables[name] = _dig(payload, json_path)
-
-        for json_path, expected in (step.get("expect_body") or {}).items():
-            actual = _dig(payload, json_path)
-            wanted = _resolve(expected, variables)
-            assert str(actual) == str(wanted), (
-                f"{prefix} 第 {index} 步 {json_path} 期望 {wanted} 实际 {actual}"
-            )
+            _run_step(client, scenario, step, variables, index)
+        except AssertionError:
+            raise
+        except Exception as exc:
+            # 任何非断言异常都必须带上标记再抛。
+            # 否则归因模块认不出这条失败，只能落到「待人工确认」。
+            raise AssertionError(
+                f"{_marker('business', scenario)} 第 {index} 步 {step['operation_id']} "
+                f"执行出错: {type(exc).__name__}: {exc}"
+            ) from exc

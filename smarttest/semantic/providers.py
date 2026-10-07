@@ -19,14 +19,25 @@ from .models import RESPONSE_SCHEMA
 # 「状态冲突」类状态码的优先级：重复操作被拒绝时应命中的码
 CONFLICT_PREFERENCE = (409, 410, 412, 423)
 
+# 下面这几条约束不是凭空写的，每一条都对应一次真实模型跑出来的问题：
+#   约束 3 ← 模型编造了 prod-1001 这类不存在的商品 ID，导致 404 被误判成缺陷
+#   约束 4 ← 模型用了 ${order_id}，而解释器认的是 {{order_id}}，变量根本替换不上
+#   约束 5 ← 模型输出了 5 个单步场景，全部被结构校验拒掉
+#   约束 6 ← rationale 写成中文长句，归因模块没法拿它匹配缺陷模式库
 SYSTEM_PROMPT = """你是一位资深测试开发工程师，负责为接口设计跨接口的业务场景测试。
 
 严格约束：
 1. 只能使用给定清单里已存在的 operationId，绝不能编造接口。
 2. expect_status 必须是该接口在契约中声明过的状态码。
-3. 只描述「调用哪个接口、传什么参数、期望什么结果」，不要写代码、不要写 URL。
-4. 场景必须跨 2-8 步，能体现状态依赖、幂等、权限、一致性等业务语义。
-5. 不要重复契约层已经覆盖的单接口参数校验用例。
+3. 请求参数中的资源 ID 必须取自 available_test_data，绝不能自己编造。
+4. 变量引用统一写成 {{变量名}} 双花括号；不要用 ${} 或其它写法。
+5. 每个场景必须 2-8 步。单接口的参数校验由契约层负责，你只做跨接口场景。
+6. rationale 必须使用「类别:子类」的机器可读格式，例如
+   idempotency:same_key、state:lifecycle、consistency:round_trip、permission:cross_tenant。
+7. capture 的方向是「变量名 -> JSONPath」，例如 {"order_id": "$.order_id"}，
+   千万不要写反。expect_body 同理，键是 $.字段名 形式的 JSONPath；
+   两者都不要加 body.、data. 这类前缀。
+8. 只描述「调用哪个接口、传什么参数、期望什么结果」，不要写代码、不要写 URL。
 
 只输出 JSON，结构为 {"scenarios": [...]}。"""
 
@@ -34,7 +45,9 @@ SYSTEM_PROMPT = """你是一位资深测试开发工程师，负责为接口设�
 class ScenarioProvider(Protocol):
     name: str
 
-    def generate(self, spec: ApiSpec, dp: DataProvider) -> list[dict[str, Any]]: ...
+    def generate(
+        self, spec: ApiSpec, dp: DataProvider, feedback: list[str] | None = None
+    ) -> list[dict[str, Any]]: ...
 
 
 # --------------------------------------------------------------------------
@@ -49,7 +62,10 @@ class RuleBasedScenarioProvider:
 
     name = "rule-based"
 
-    def generate(self, spec: ApiSpec, dp: DataProvider) -> list[dict[str, Any]]:
+    def generate(
+        self, spec: ApiSpec, dp: DataProvider, feedback: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        # 规则推导不需要反馈：它本来就是确定性的，重跑一次结果一样
         scenarios: list[dict[str, Any]] = []
 
         creators = [
@@ -197,22 +213,31 @@ class OpenAICompatibleProvider:
         self.model = model
         self.timeout = timeout
 
-    def generate(self, spec: ApiSpec, dp: DataProvider) -> list[dict[str, Any]]:
-        context = build_context(spec)
+    def generate(
+        self, spec: ApiSpec, dp: DataProvider, feedback: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        context = build_context(spec, dp)
+
+        prompt_parts = [
+            "以下是接口契约清单（只允许使用其中的 operationId）：\n",
+            json.dumps(context, ensure_ascii=False, indent=2),
+            "\n\n输出 JSON Schema 约束：\n",
+            json.dumps(RESPONSE_SCHEMA, ensure_ascii=False),
+        ]
+
+        if feedback:
+            # 把「上一次哪里不合格」明确回灌，比单纯重试一次有效得多
+            prompt_parts.append(
+                "\n\n上一次的输出有以下问题，请修正后重新输出完整结果：\n"
+                + "\n".join(f"- {item}" for item in feedback)
+            )
+
         payload = {
             "model": self.model,
             "temperature": 0,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        "以下是接口契约清单（只允许使用其中的 operationId）：\n"
-                        + json.dumps(context, ensure_ascii=False, indent=2)
-                        + "\n\n输出 JSON Schema 约束：\n"
-                        + json.dumps(RESPONSE_SCHEMA, ensure_ascii=False)
-                    ),
-                },
+                {"role": "user", "content": "".join(prompt_parts)},
             ],
         }
 
@@ -245,12 +270,12 @@ class OpenAICompatibleProvider:
         return scenarios
 
 
-def build_context(spec: ApiSpec) -> list[dict[str, Any]]:
+def build_context(spec: ApiSpec, dp: DataProvider | None = None) -> dict[str, Any]:
     """把契约压缩成模型能读懂的清单。只给语义信息，不给完整 schema。"""
-    context: list[dict[str, Any]] = []
+    operations: list[dict[str, Any]] = []
     for op in spec.operations:
         props = (op.body_schema or {}).get("properties", {})
-        context.append(
+        operations.append(
             {
                 "operationId": op.operation_id,
                 "method": op.method,
@@ -265,7 +290,19 @@ def build_context(spec: ApiSpec) -> list[dict[str, Any]]:
                 ),
             }
         )
-    return context
+
+    return {
+        "operations": operations,
+        # 真实可用数据必须显式给出，否则模型一定会自己编 ——
+        # 实测它编了 prod-1001，结果 3 个场景全挂在 404 上，被误判成缺陷。
+        "available_test_data": (dp.valid if dp else {}),
+        "rules": [
+            "资源 ID 只能取 available_test_data 里的值",
+            "变量引用写成 {{变量名}}",
+            "每个场景 2-8 步",
+            "rationale 用 类别:子类 格式",
+        ],
+    }
 
 
 def build_provider(verbose: bool = True) -> ScenarioProvider:

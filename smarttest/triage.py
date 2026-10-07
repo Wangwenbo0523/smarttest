@@ -32,6 +32,10 @@ _MARKER = re.compile(
     r"(?:\[expected=(?P<expected>\d+)\])?(?:\[actual=(?P<actual>\d+)\])?"
 )
 
+# 「我们给的前置数据不存在」和「服务有 bug」是两回事，
+# 混在一起报就会把假阳性算成缺陷 —— 实测 LLM 编造商品 ID 时踩过这个坑。
+_MISSING_DATA_KEYWORDS = ("不存在", "not found", "no such", "未找到")
+
 _ENV_KEYWORDS = (
     "ConnectError", "ConnectTimeout", "ReadTimeout", "Connection refused",
     "Max retries exceeded", "Name or service not known", "Temporary failure in name resolution",
@@ -160,7 +164,33 @@ class Triage:
         basis = match.group("basis")
         title, suggestion = _lookup_pattern(basis)
 
+        if kind == "generator":
+            return Finding(
+                case_id=case_id,
+                category=CASE_ISSUE,
+                severity=SEVERITY[CASE_ISSUE],
+                title="生成的场景存在未解析变量",
+                basis=basis,
+                suggestion="生成侧变量捕获有问题，属于用例问题而非被测系统缺陷；已在解释器前置拦截",
+                evidence=message[:400],
+                field="",
+                coarse="generator_unresolved",
+            )
+
         if kind == "business":
+            lowered = message.lower()
+            if any(kw in message or kw in lowered for kw in _MISSING_DATA_KEYWORDS) and "实际 404" in message:
+                return Finding(
+                    case_id=case_id,
+                    category=DATA_ISSUE,
+                    severity=SEVERITY[DATA_ISSUE],
+                    title="前置测试数据不存在",
+                    basis=basis,
+                    suggestion="检查测试数据字典是否与被测环境一致；生成侧不要凭空编造资源 ID",
+                    evidence=message[:400],
+                    field="",
+                    coarse="data_missing",
+                )
             return Finding(
                 case_id=case_id,
                 category=REAL_DEFECT,

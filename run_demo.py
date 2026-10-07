@@ -27,6 +27,25 @@ for _stream in (sys.stdout, sys.stderr):
 
 import httpx  # noqa: E402
 
+def _load_local_env() -> None:
+    """读取 .env.local（已在 .gitignore 中），方便本地配模型密钥。
+
+    不引入 python-dotenv：就十几行的事，没必要多一个依赖。
+    用 setdefault 而不是覆盖，保证命令行显式传入的环境变量优先级更高。
+    """
+    env_file = ROOT / ".env.local"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+_load_local_env()
+
 from smarttest.dataprovider import DataProvider  # noqa: E402
 from smarttest.generator import PytestGenerator  # noqa: E402
 from smarttest.metrics import MetricsReporter  # noqa: E402
@@ -134,8 +153,11 @@ def main() -> int:
         say(STEP.format(n=4, text="语义增强：推导跨接口业务场景..."))
         enhancer = SemanticEnhancer(build_provider(), dp)
         enhancement = enhancer.enhance(spec)
+        retry_note = ""
+        if enhancement.retry_attempted:
+            retry_note = f" | 回灌重试补回 {enhancement.retry_recovered} 个"
         say(f"       [OK] 提供方={enhancement.provider_name} | 采纳 {len(enhancement.scenarios)} 个场景"
-            f" | 拒绝 {enhancement.rejected_count} 个")
+            f" | 拒绝 {enhancement.rejected_count} 个{retry_note}")
         for rejected in enhancement.rejected:
             say(f"       [!] 拒绝 {rejected.scenario_id}：{rejected.reason}")
 

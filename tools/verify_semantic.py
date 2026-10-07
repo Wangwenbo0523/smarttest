@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """验证语义增强层的 LLM 通路与幻觉拦截。
 
-用一个假的 OpenAI 兼容服务，喂进 4 个场景：
-  1 个合法            -> 必须被采纳
-  1 个编造接口        -> 必须被拦下
-  1 个编造状态码      -> 必须被拦下
-  1 个结构不合法      -> 必须被拦下
+用一个假的 OpenAI 兼容服务，喂进 6 个场景：
+  1 个合法                        -> 必须被采纳
+  1 个期望值大小写与契约不符      -> 必须被就地归一后采纳
+  1 个编造接口                    -> 必须被拦下
+  1 个编造状态码                  -> 必须被拦下
+  1 个编造枚举取值                -> 必须被拦下
+  1 个结构不合法                  -> 必须被拦下
 再验证模型不可用时会降级到规则推导，而不是整体失败。
 
 用法：python tools/verify_semantic.py
@@ -57,6 +59,46 @@ CANNED = {
                     "body": VALID_PAYLOAD,
                     "expect_status": 201,
                     "expect_body": {"$.order_id": "{{order_id}}"},
+                },
+            ],
+        },
+        {
+            "scenario_id": "llm_enum_case_mismatch",
+            "title": "下单后查询订单，状态写成小写 created（契约里是 CREATED）",
+            "rationale": "state:lifecycle",
+            "steps": [
+                {
+                    "operation_id": "createOrder",
+                    "headers": {"Idempotency-Key": "k-2"},
+                    "body": VALID_PAYLOAD,
+                    "expect_status": 201,
+                    "capture": {"order_id": "$.order_id"},
+                },
+                {
+                    "operation_id": "getOrder",
+                    "path_params": {"order_id": "{{order_id}}"},
+                    "expect_status": 200,
+                    "expect_body": {"$.status": "created"},
+                },
+            ],
+        },
+        {
+            "scenario_id": "llm_enum_unknown_value",
+            "title": "期望一个契约里根本不存在的订单状态 SHIPPED",
+            "rationale": "state:invented",
+            "steps": [
+                {
+                    "operation_id": "createOrder",
+                    "headers": {"Idempotency-Key": "k-3"},
+                    "body": VALID_PAYLOAD,
+                    "expect_status": 201,
+                    "capture": {"order_id": "$.order_id"},
+                },
+                {
+                    "operation_id": "getOrder",
+                    "path_params": {"order_id": "{{order_id}}"},
+                    "expect_status": 200,
+                    "expect_body": {"$.status": "SHIPPED"},
                 },
             ],
         },
@@ -131,16 +173,25 @@ def main() -> int:
         for rejected in result.rejected:
             print(f"    - 拒绝 {rejected.scenario_id}: {rejected.reason}")
 
-        if len(result.scenarios) != 1 or result.scenarios[0].scenario_id != "llm_idempotent_create":
-            failures.append("合法场景没有被正确采纳")
-        if len(result.rejected) != 3:
-            failures.append(f"应当拒绝 3 个场景，实际拒绝 {len(result.rejected)} 个")
+        accepted_ids = {s.scenario_id for s in result.scenarios}
+        if accepted_ids != {"llm_idempotent_create", "llm_enum_case_mismatch"}:
+            failures.append(f"被采纳的场景不符合预期: {sorted(accepted_ids)}")
+        if len(result.rejected) != 4:
+            failures.append(f"应当拒绝 4 个场景，实际拒绝 {len(result.rejected)} 个")
+
+        aligned = next(
+            (s for s in result.scenarios if s.scenario_id == "llm_enum_case_mismatch"), None
+        )
+        if aligned is None or aligned.steps[1].expect_body.get("$.status") != "CREATED":
+            failures.append("期望值与契约枚举大小写不一致时，没有被归一化为契约取值")
 
         reasons = {r.scenario_id: r.reason for r in result.rejected}
         if "不存在" not in reasons.get("llm_hallucinated_operation", ""):
             failures.append("编造的 operationId 没有被拦截")
         if "未在契约中声明" not in reasons.get("llm_undocumented_status", ""):
             failures.append("编造的状态码没有被拦截")
+        if "枚举" not in reasons.get("llm_enum_unknown_value", ""):
+            failures.append("编造的枚举取值没有被拦截")
         if "结构校验失败" not in reasons.get("llm_single_step", ""):
             failures.append("结构不合法的场景没有被拦截")
     finally:
