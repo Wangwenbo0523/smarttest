@@ -1,0 +1,11 @@
+# 统一换行符：源码一律 LF。
+# 本地是 Windows、CI 是 Linux，不统一的话每次 diff 都会飘。
+* text=auto eol=lf
+
+# 二进制文件不做任何转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.xlsx binary

@@ -1,0 +1,148 @@
+openapi: 3.0.3
+info:
+  title: 订单服务（设计契约）
+  version: 1.0.0
+  description: >
+    本文件是接口的「设计契约」，由产品与技术方案评审产出。
+    服务实现必须与契约保持一致，不一致即为缺陷——这正是本靶场要验证的。
+paths:
+  /api/v1/orders:
+    post:
+      operationId: createOrder
+      tags: [订单]
+      summary: 创建订单
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: 幂等键。相同 key 重复提交只能创建一笔订单。
+          schema:
+            type: string
+            maxLength: 64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderCreateRequest'
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '404':
+          description: 商品不存在
+        '422':
+          description: 参数校验失败
+  /api/v1/orders/{order_id}:
+    get:
+      operationId: getOrder
+      tags: [订单]
+      summary: 查询订单详情
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+      responses:
+        '200':
+          description: 订单详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '404':
+          description: 订单不存在
+  /api/v1/orders/{order_id}/pay:
+    post:
+      operationId: payOrder
+      tags: [订单]
+      summary: 支付订单
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+      responses:
+        '200':
+          description: 支付成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '404':
+          description: 订单不存在
+        '409':
+          description: 订单状态不允许支付（已支付或已取消）
+  /api/v1/products/{product_id}:
+    get:
+      operationId: getProduct
+      tags: [商品]
+      summary: 查询商品详情
+      parameters:
+        - name: product_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 32
+      responses:
+        '200':
+          description: 商品详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '404':
+          description: 商品不存在
+components:
+  schemas:
+    OrderCreateRequest:
+      type: object
+      required: [product_id, quantity]
+      properties:
+        product_id:
+          type: string
+          minLength: 1
+          maxLength: 32
+          description: 商品 ID
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 999
+          description: 购买数量，取值 1-999
+        coupon_code:
+          type: string
+          maxLength: 16
+          nullable: true
+          description: 优惠券码
+    Order:
+      type: object
+      required: [order_id, product_id, quantity, unit_price, total_price, status, created_at]
+      properties:
+        order_id: { type: string }
+        product_id: { type: string }
+        quantity: { type: integer }
+        unit_price: { type: number, multipleOf: 0.01 }
+        total_price:
+          type: number
+          multipleOf: 0.01
+          description: 订单总价，必须精确到分
+        status: { type: string, enum: [CREATED, PAID, CANCELLED] }
+        created_at: { type: string, format: date-time }
+    Product:
+      type: object
+      properties:
+        product_id: { type: string }
+        name: { type: string }
+        price: { type: number, multipleOf: 0.01 }
+        stock: { type: integer, minimum: 0 }

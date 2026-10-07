@@ -1,0 +1,58 @@
+name: 质量门禁
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-gate:
+    name: 质量门禁
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      # 这一条是「能不能发现问题」：靶场注入了 3 个缺陷，
+      # 补全覆盖后又暴露出 1 处契约漂移，所以期望命中 4 个。
+      # 数量对不上说明规则引擎漏了或误报了。
+      - name: 缺陷检出（期望命中 4 个真实缺陷）
+        run: python run_demo.py --target-mode buggy --expect-defects 4 --report-tag buggy
+
+      # 这一条是「是不是误报」：同一套用例打到已修复的靶场上，
+      # 必须一个缺陷都报不出来。误报率是这类工具能不能落地的分水岭。
+      - name: 零误报自证（修复版应报 0 个缺陷）
+        run: python run_demo.py --target-mode fixed --expect-defects 0 --report-tag fixed
+
+      # 这一条是「生成质量」：召回率 = 该测的有没有测到，
+      # 精确率 = 生成的是不是都该测。低于 100% 直接卡住。
+      - name: 用例生成质量门禁
+        run: python run_evals.py --min-recall 100 --min-precision 100
+
+      # 这一条是「模型能不能被信任」：验证幻觉拦截与降级机制。
+      # 用内置的假模型服务，不需要任何 API Key。
+      - name: 语义增强层通路与幻觉拦截
+        run: python tools/verify_semantic.py
+
+      - name: 上传质量报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-reports
+          path: build/reports/
+          retention-days: 14

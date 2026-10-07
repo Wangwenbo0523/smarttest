@@ -1,0 +1,46 @@
+# 用例生成质量标注集
+#
+# 这是人工从设计契约推导出的「必测清单」，与规则引擎相互独立。
+# 生成器漏了什么、多生成了什么，评测脚本会直接点出来。
+#
+# 格式：operationId -> 字段 -> 必须覆盖的设计方法
+# 设计方法的命名与规则引擎保持一致，便于比对。
+
+createOrder:
+  quantity:
+    - required:missing
+    - type:integer
+    - boundary:minimum-1     # 0 必须被拒绝
+    - boundary:minimum       # 1 必须通过
+    - boundary:maximum       # 999 必须通过
+    - boundary:maximum+1     # 1000 必须被拒绝
+  product_id:
+    - required:missing
+    - type:string
+    - boundary:minLength-1
+    - boundary:maxLength+1
+    - resource:not_found
+  coupon_code:
+    - type:string
+    - boundary:maxLength+1
+    - boundary:maxLength     # 16 位本身也必须验证能通过
+    - nullable:null
+  Idempotency-Key:
+    - boundary:maxLength+1   # 契约声明 maxLength=64，超长幂等键应被拒绝
+    - boundary:maxLength     # 64 位本身也必须验证能通过
+
+getOrder:
+  order_id:
+    - resource:not_found
+    - boundary:maxLength+1
+
+payOrder:
+  order_id:
+    - resource:not_found
+    - boundary:maxLength+1
+
+getProduct:
+  product_id:
+    - resource:exists
+    - resource:not_found
+    - boundary:maxLength+1

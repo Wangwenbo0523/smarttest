@@ -1,0 +1,9 @@
+{
+  "valid": {
+    "product_id": ["P001", "P002", "P003"]
+  },
+  "unknown": {
+    "product_id": "P-UNKNOWN-9999",
+    "order_id": "O-NOT-EXIST-9999"
+  }
+}
