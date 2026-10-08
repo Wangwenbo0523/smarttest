@@ -2,6 +2,8 @@
 
 中文在前，英文在后。/ Chinese first, English below.
 
+![三份契约的量化结果](results-card.png)
+
 ---
 
 ## 中文
