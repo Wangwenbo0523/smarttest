@@ -1,0 +1,90 @@
+# 用例生成质量标注集（第三靶场：内容服务）
+#
+# 与另外两份标注集同构，针对第三份契约。这份契约的形态是前两个靶场没有的：
+# 查询参数、嵌套对象、数组字段、Bearer 认证头。
+#
+# 格式：operationId -> 字段 -> 必须覆盖的设计方法
+# 嵌套字段用点分路径（author.name），与 case_id 里的写法一致。
+#
+# 已知边界：
+#   - 数组只覆盖「类型不对」，不生成元素级边界与元素个数边界；
+#   - 嵌套只下钻一层对象（规则引擎的深度上限是 2 层字段）。
+
+listArticles:
+  workspace:
+    - required:missing_query    # 必填查询参数，不传必须被拒绝
+    - boundary:minLength-1
+    - boundary:minLength
+    - boundary:maxLength+1
+    - boundary:maxLength
+  sort:
+    - enum:valid                # CREATED_AT / TITLE
+    - enum:invalid
+  tag:
+    - boundary:maxLength+1
+    - boundary:maxLength
+  keyword:
+    - boundary:minLength-1
+    - boundary:minLength
+    - boundary:maxLength+1
+    - boundary:maxLength
+  page:
+    - type:integer              # query 参数里只有数值型才谈得上「类型不对」
+    - boundary:minimum-1
+    - boundary:minimum
+  page_size:
+    - type:integer
+    - boundary:minimum-1
+    - boundary:minimum
+    - boundary:maximum+1
+    - boundary:maximum
+
+createArticle:
+  title:
+    - required:missing
+    - type:string
+    - boundary:minLength-1
+    - boundary:minLength
+    - boundary:maxLength+1
+    - boundary:maxLength
+  summary:
+    - type:string
+    - boundary:maxLength+1
+    - boundary:maxLength
+    - nullable:null
+  tags:
+    - type:array
+  author:
+    - required:missing
+    - type:object
+  author.name:
+    - required:missing          # 嵌套对象内部的必填
+    - type:string
+    - boundary:minLength-1
+    - boundary:minLength
+    - boundary:maxLength+1
+    - boundary:maxLength
+  author.email:
+    - required:missing
+    - type:string
+    - boundary:minLength-1
+    - boundary:minLength
+    - boundary:maxLength+1
+    - boundary:maxLength
+  status:
+    - type:string
+    - enum:valid
+    - enum:invalid
+  Authorization:
+    - required:missing_header
+    - boundary:minLength-1
+  X-Trace-Id:
+    - boundary:maxLength+1
+    - boundary:maxLength
+
+getArticle:
+  article_id:
+    - resource:exists
+    - resource:not_found
+    - boundary:maxLength+1
+    - boundary:minLength-1

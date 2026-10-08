@@ -1,0 +1,8 @@
+{
+  "valid": {
+    "article_id": ["A1001", "A1002"]
+  },
+  "unknown": {
+    "article_id": "A-NOT-EXIST-9999"
+  }
+}

@@ -20,14 +20,11 @@ class Target:
     key: str
     label: str
     app: str
+    port: int
     contract: Path
     dataset: Path
     ground_truth: Path
     business_template: str
-
-    @property
-    def default_port(self) -> int:
-        return 8123 if self.key == "orders" else 8124
 
 
 TARGETS: dict[str, Target] = {
@@ -35,6 +32,7 @@ TARGETS: dict[str, Target] = {
         key="orders",
         label="订单服务",
         app="target_service.app:app",
+        port=8123,
         contract=ROOT / "target_service" / "contract" / "openapi.yaml",
         dataset=ROOT / "datasets" / "testdata.json",
         ground_truth=ROOT / "evals" / "ground_truth.yaml",
@@ -44,10 +42,21 @@ TARGETS: dict[str, Target] = {
         key="users",
         label="用户与订阅服务",
         app="target_service.user_app:app",
+        port=8124,
         contract=ROOT / "target_service" / "contract" / "users.yaml",
         dataset=ROOT / "datasets" / "users_testdata.json",
         ground_truth=ROOT / "evals" / "ground_truth_users.yaml",
         business_template="business_user_test.py.j2",
+    ),
+    "articles": Target(
+        key="articles",
+        label="内容服务",
+        app="target_service.article_app:app",
+        port=8125,
+        contract=ROOT / "target_service" / "contract" / "articles.yaml",
+        dataset=ROOT / "datasets" / "articles_testdata.json",
+        ground_truth=ROOT / "evals" / "ground_truth_articles.yaml",
+        business_template="business_article_test.py.j2",
     ),
 }
 

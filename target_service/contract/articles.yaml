@@ -1,0 +1,191 @@
+openapi: 3.0.3
+info:
+  title: 内容服务（设计契约）
+  version: 3.0.0
+  description: >
+    第三份设计契约。前两个靶场照不出来的形态，这里补齐：
+
+      - **查询参数**：列表接口的分页、过滤、排序（前两份契约一个 query 参数都没有）
+      - **嵌套对象**：请求体里必填的 author 对象，字段约束在第二层
+      - **数组字段**：tags
+      - **认证头**：必填的 Authorization（Bearer），值来自契约里写的 example
+
+    服务实现必须与契约保持一致，不一致即为缺陷。
+paths:
+  /api/v1/articles:
+    get:
+      operationId: listArticles
+      tags: [文章]
+      summary: 文章列表（分页 / 过滤 / 排序）
+      parameters:
+        - name: workspace
+          in: query
+          required: true
+          description: 工作空间标识，必填。
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 24
+        - name: sort
+          in: query
+          required: false
+          description: 排序字段。
+          schema:
+            type: string
+            enum: [CREATED_AT, TITLE]
+        - name: tag
+          in: query
+          required: false
+          description: 按标签过滤。
+          schema:
+            type: string
+            maxLength: 16
+        - name: keyword
+          in: query
+          required: false
+          description: 标题关键字。
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 32
+        - name: page
+          in: query
+          required: false
+          description: 页码，从 1 开始。
+          schema:
+            type: integer
+            minimum: 1
+        - name: page_size
+          in: query
+          required: false
+          description: 每页条数，1-100。
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: 文章列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArticleList'
+        '422':
+          description: 查询参数校验失败
+    post:
+      operationId: createArticle
+      tags: [文章]
+      summary: 创建文章
+      parameters:
+        - name: Authorization
+          in: header
+          required: true
+          description: Bearer 令牌，形如 "Bearer <token>"。
+          schema:
+            type: string
+            minLength: 8
+            example: Bearer smarttest-token
+        - name: X-Trace-Id
+          in: header
+          required: false
+          description: 链路追踪标识，选填。
+          schema:
+            type: string
+            maxLength: 64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ArticleCreateRequest'
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Article'
+        '422':
+          description: 参数校验失败
+  /api/v1/articles/{article_id}:
+    get:
+      operationId: getArticle
+      tags: [文章]
+      summary: 查询文章详情
+      parameters:
+        - name: article_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 4
+            maxLength: 36
+      responses:
+        '200':
+          description: 文章详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Article'
+        '404':
+          description: 文章不存在
+components:
+  schemas:
+    ArticleCreateRequest:
+      type: object
+      required: [title, author]
+      properties:
+        title:
+          type: string
+          minLength: 3
+          maxLength: 80
+          description: 文章标题
+        summary:
+          type: string
+          maxLength: 200
+          nullable: true
+          description: 摘要
+        tags:
+          type: array
+          items:
+            type: string
+          description: 标签。存储时去重，保留首次出现的顺序。
+        author:
+          type: object
+          required: [name, email]
+          properties:
+            name:
+              type: string
+              minLength: 2
+              maxLength: 32
+              description: 作者昵称
+            email:
+              type: string
+              minLength: 6
+              maxLength: 64
+              description: 作者邮箱
+        status:
+          type: string
+          enum: [DRAFT, PUBLISHED, ARCHIVED]
+          description: 文章状态；不传时默认 DRAFT
+    Author:
+      type: object
+      properties:
+        name: { type: string }
+        email: { type: string }
+    Article:
+      type: object
+      required: [article_id, title, status, author, created_at]
+      properties:
+        article_id: { type: string }
+        title: { type: string }
+        summary: { type: string, nullable: true }
+        tags: { type: array, items: { type: string } }
+        author: { $ref: '#/components/schemas/Author' }
+        status: { type: string, enum: [DRAFT, PUBLISHED, ARCHIVED] }
+        created_at: { type: string, format: date-time }
+    ArticleList:
+      type: object
+      properties:
+        total: { type: integer, minimum: 0 }
+        items: { type: array, items: { $ref: '#/components/schemas/Article' } }

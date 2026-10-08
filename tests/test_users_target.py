@@ -47,10 +47,10 @@ class TestTargetRegistry:
     """注册表是流水线与具体领域之间唯一的接口，登记错了后面全错。"""
 
     def test_both_targets_are_registered(self):
-        assert target_keys() == ["orders", "users"]
-        assert set(TARGETS) == {"orders", "users"}
+        assert target_keys() == ["articles", "orders", "users"]
+        assert set(TARGETS) == {"orders", "users", "articles"}
 
-    @pytest.mark.parametrize("key", ["orders", "users"])
+    @pytest.mark.parametrize("key", ["orders", "users", "articles"])
     def test_registered_files_exist(self, key):
         target = get_target(key)
         assert target.contract.exists(), target.contract
@@ -58,16 +58,18 @@ class TestTargetRegistry:
         assert target.ground_truth.exists(), target.ground_truth
         assert (TEMPLATE_DIR / target.business_template).exists(), target.business_template
 
-    @pytest.mark.parametrize("key", ["orders", "users"])
+    @pytest.mark.parametrize("key", ["orders", "users", "articles"])
     def test_app_module_is_importable(self, key):
         module_name = get_target(key).app.split(":")[0]
         assert importlib.import_module(module_name) is not None
 
     def test_targets_use_distinct_ports_and_datasets(self):
-        orders, users = get_target("orders"), get_target("users")
-        assert orders.default_port != users.default_port
-        assert orders.dataset != users.dataset
-        assert orders.contract != users.contract
+        ports = [t.port for t in TARGETS.values()]
+        datasets = [t.dataset for t in TARGETS.values()]
+        contracts = [t.contract for t in TARGETS.values()]
+        assert len(set(ports)) == len(ports), "两个靶场抢同一个端口会让门禁互相打架"
+        assert len(set(datasets)) == len(datasets)
+        assert len(set(contracts)) == len(contracts)
 
     def test_unknown_target_key_exits(self):
         with pytest.raises(SystemExit, match="未知靶场"):
@@ -155,25 +157,10 @@ class TestDatasetConsistency:
     用例期望错了，修复版靶场就会报出一条不存在的缺陷。
     """
 
-    @staticmethod
-    def _constraints(spec) -> dict[str, dict]:
-        constraints: dict[str, dict] = {}
-        for op in spec.operations:
-            for name, sub in (op.body_schema or {}).get("properties", {}).items():
-                constraints.setdefault(name, sub)
-            for param in op.parameters:
-                constraints.setdefault(param.name, param.schema)
-        return constraints
-
-    def test_dataset_values_respect_declared_length_bounds(self, users_spec, users_dp):
-        constraints = self._constraints(users_spec)
-        offenders: list[str] = []
-        for field, values in users_dp.valid.items():
-            for value in values:
-                offenders += _check_bounds(field, value, constraints)
-        for field, value in users_dp.unknown.items():
-            offenders += _check_bounds(field, value, constraints)
-        assert offenders == []
+    def test_dataset_values_respect_declared_length_bounds(
+        self, users_spec, users_dp, dataset_bounds_checker
+    ):
+        assert dataset_bounds_checker(users_spec, users_dp) == []
 
     def test_resource_lookups_have_both_known_and_unknown_values(self, users_dp):
         # resource:exists 与 resource:not_found 是成对的：
@@ -182,17 +169,3 @@ class TestDatasetConsistency:
         assert users_dp.unknown_value("user_id") is not None
         assert users_dp.first("plan_code") is not None
         assert users_dp.unknown_value("plan_code") is not None
-
-
-def _check_bounds(field: str, value, constraints: dict[str, dict]) -> list[str]:
-    schema = constraints.get(field)
-    if not schema or not isinstance(value, str):
-        return []
-    problems: list[str] = []
-    minimum = schema.get("minLength")
-    maximum = schema.get("maxLength")
-    if isinstance(minimum, int) and len(value) < minimum:
-        problems.append(f"{field}={value!r} 短于契约下界 {minimum}")
-    if isinstance(maximum, int) and len(value) > maximum:
-        problems.append(f"{field}={value!r} 超过契约上界 {maximum}")
-    return problems

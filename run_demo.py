@@ -153,7 +153,7 @@ def main() -> int:
     args = arg_parser.parse_args()
 
     target = get_target(args.target)
-    port = args.port or target.default_port
+    port = args.port or target.port
     base_url = f"http://127.0.0.1:{port}"
 
     service = None
