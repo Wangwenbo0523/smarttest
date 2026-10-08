@@ -6,6 +6,8 @@ XML 稳定得多。这条决定值得被测试钉住：解析一旦错位，
 """
 from __future__ import annotations
 
+import pytest
+
 from smarttest.runner import CaseResult, PytestRunner, RunSummary
 
 
@@ -25,7 +27,9 @@ class TestRunSummary:
         assert summary.errors == 1
         assert summary.skipped == 1
         assert [r.name for r in summary.broken] == ["b", "c"]
-        assert summary.duration == 0.6
+        # 必须用 approx：0.1+0.2+0.3 在 Python 3.11 上是 0.6000000000000001，
+        # 3.12+ 改用了补偿求和才是精确的 0.6。写死浮点数会让门禁变成版本抽奖。
+        assert summary.duration == pytest.approx(0.6)
 
     def test_empty_summary_is_all_zeros(self):
         summary = RunSummary()
