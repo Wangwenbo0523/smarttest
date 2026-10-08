@@ -148,3 +148,17 @@ def dataset_bounds_checker():
         return problems
 
     return _check
+
+
+@pytest.fixture
+def target_assets():
+    """按靶场 key 加载 (契约 IR, 数据字典)。用于需要非默认靶场的用例。"""
+    from smarttest.dataprovider import DataProvider
+    from smarttest.parser import OpenApiParser
+    from smarttest.targets import get_target
+
+    def _load(key: str):
+        target = get_target(key)
+        return OpenApiParser.from_file(target.contract).parse(), DataProvider.load(target.dataset)
+
+    return _load

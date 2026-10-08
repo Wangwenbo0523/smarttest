@@ -86,7 +86,17 @@ class SemanticEnhancer:
                 )
                 result.scenarios.extend(accepted_retry)
                 result.retry_recovered = len(accepted_retry)
-                rejected = rejected_retry
+                # 首轮被拒、这一轮既没改对、也没再被提出来的场景，仍然要留在报告里。
+                # 直接换成 rejected_retry 的话，模型悄悄丢掉的那几条就查无此事了 ——
+                # 这与「不静默丢弃」这条原则自相矛盾。
+                still_rejected = {item.scenario_id for item in rejected_retry}
+                recovered = {case.scenario_id for case in accepted_retry}
+                rejected = rejected_retry + [
+                    item
+                    for item in rejected
+                    if item.scenario_id not in still_rejected
+                    and item.scenario_id not in recovered
+                ]
 
         result.rejected = rejected
         return result
@@ -121,12 +131,15 @@ class SemanticEnhancer:
                 rejected.append(RejectedScenario(scenario.scenario_id, problem, raw))
                 continue
 
-            if scenario.scenario_id in seen:
-                continue
+            # 同一批里的重复要报出来；跨轮（回灌重试把上一轮合格的又交一遍）才算正常重复，
+            # 静默跳过。顺序不能反：seen 在循环里会随采纳一起增长，
+            # 先查 seen 会让下面这一支永远走不到。
             if scenario.scenario_id in seen_in_batch:
                 rejected.append(
                     RejectedScenario(scenario.scenario_id, "同一批输出里场景 ID 重复，已丢弃后出现的", raw)
                 )
+                continue
+            if scenario.scenario_id in seen:
                 continue
 
             shape = self._shape(scenario)
