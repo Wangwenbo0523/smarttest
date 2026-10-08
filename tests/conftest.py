@@ -69,3 +69,40 @@ def make_operation():
         return ApiSpec(title="t", version="1", operations=[Operation(**kwargs)]).operations[0]
 
     return _make
+
+
+@pytest.fixture
+def make_summary():
+    """工厂夹具：构造 RunSummary。
+
+    results 里每项是 (用例名, 失败消息) 或 (用例名, 失败消息, 状态)，
+    默认状态是 failed（环境/断言失败都走这一支）。
+    """
+    from smarttest.runner import CaseResult, RunSummary
+
+    def _make(*results, duration: float = 1.0) -> RunSummary:
+        items = []
+        for item in results:
+            name, message = item[0], item[1]
+            status = item[2] if len(item) > 2 else "failed"
+            items.append(CaseResult(name=name, status=status, duration=duration, message=message))
+        return RunSummary(results=items)
+
+    return _make
+
+
+@pytest.fixture
+def marker():
+    """工厂夹具：拼装生成器写进断言消息的机器可读标记。"""
+
+    def _make(case_id: str, basis: str, expected=None, actual=None, kind: str = "contract", tail: str = "") -> str:
+        text = f"[kind={kind}][case_id={case_id}][basis={basis}]"
+        if expected is not None:
+            text += f"[expected={expected}]"
+        if actual is not None:
+            text += f"[actual={actual}]"
+        if tail:
+            text += f" | {tail}"
+        return text
+
+    return _make
