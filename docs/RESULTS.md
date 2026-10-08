@@ -3,6 +3,11 @@
 一页看清这个项目**做到了什么、怎么验证、能写进简历的哪一句**。
 所有数字都能在本地或 CI 里复现，验证路径在最后一节。
 
+![成果卡](results-card.png)
+
+> 这张图由 `python tools/render_results_card.py` 生成 —— 数字改了就重跑，
+> 不会出现「README 写了 4 个缺陷、图里还是 3 个」。
+
 ---
 
 ## 一句话
@@ -30,7 +35,7 @@
 
 | 工程质量 | 数字 |
 |---|---|
-| 单元测试 | 239 条，核心模块覆盖率 **98%** |
+| 单元测试 | 246 条，核心模块覆盖率 **98%** |
 | CI 质量门禁 | **13 道**（单测、覆盖率、三个靶场各自的缺陷检出 / 零误报 / 生成质量、语义层、演示层） |
 | 契约形态覆盖 | 请求头、路径参数、查询参数、嵌套对象、数组、枚举、可空、资源引用 |
 | 换靶场逼出的真实缺口 | 2 个（必填请求头漏带、查询参数整块不覆盖） |
@@ -74,7 +79,7 @@
 git clone https://github.com/Wangwenbo0523/smarttest && cd smarttest
 pip install -r requirements.txt
 
-pytest -q --cov=smarttest            # 239 条单测，覆盖率 98%
+pytest -q --cov=smarttest            # 246 条单测，覆盖率 98%
 
 python run_demo.py --target-mode buggy --expect-defects 4   # 缺陷版：报 4 个
 python run_demo.py --target-mode fixed --expect-defects 0   # 修复版：报 0 个
