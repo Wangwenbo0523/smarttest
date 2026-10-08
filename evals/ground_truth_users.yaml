@@ -1,0 +1,70 @@
+# 用例生成质量标注集（第二靶场：用户与订阅服务）
+#
+# 与 evals/ground_truth.yaml 同构，但针对的是另一份契约。
+# 两份标注集互相独立地人工从契约推导 ——
+# 「召回 100% / 精确率 100%」在两个不同领域上同时成立，
+# 才能说明这套推导是真通用，而不是给订单服务量身定做的。
+#
+# 格式：operationId -> 字段 -> 必须覆盖的设计方法
+#
+# 已知局限：签名取 basis 中「=」之前的部分，所以同一字段的多个合法枚举值
+# （enum:valid=WEB / APP / PARTNER）会折叠成一个签名，评测无法区分
+# 「覆盖了 1 个枚举值」和「覆盖了全部」。要精确到取值，需要把签名改成
+# 带取值的形式，那会牵动两个靶场的标注集，留作后续。
+
+createUser:
+  name:
+    - required:missing
+    - type:string
+    - boundary:minLength-1
+    - boundary:minLength
+    - boundary:maxLength+1
+    - boundary:maxLength
+  email:
+    - required:missing
+    - type:string
+    - boundary:minLength-1
+    - boundary:minLength
+    - boundary:maxLength+1
+    - boundary:maxLength
+  plan_code:
+    - required:missing
+    - type:string
+    - boundary:minLength-1
+    - boundary:maxLength+1
+    - resource:not_found     # PLAN-NONE 必须被拒绝
+  age:
+    - type:integer
+    - boundary:minimum-1     # 17 必须被拒绝
+    - boundary:minimum       # 18 必须通过
+    - boundary:maximum       # 120 必须通过
+    - boundary:maximum+1     # 121 必须被拒绝
+  channel:
+    - type:string
+    - enum:valid             # WEB / APP / PARTNER
+    - enum:invalid
+  marketing_opt_in:
+    - type:boolean
+    - nullable:null
+  X-Tenant-Id:
+    - required:missing_header   # 必填请求头，不传必须被拒绝
+    - boundary:minLength-1      # 3 位必须被拒绝
+    - boundary:maxLength+1      # 17 位必须被拒绝
+    - boundary:maxLength        # 16 位必须通过
+  X-Request-Source:
+    - boundary:maxLength+1
+    - boundary:maxLength
+
+getUser:
+  user_id:
+    - resource:exists
+    - resource:not_found
+    - boundary:minLength-1
+    - boundary:maxLength+1
+
+getPlan:
+  plan_code:
+    - resource:exists
+    - resource:not_found
+    - boundary:minLength-1
+    - boundary:maxLength+1

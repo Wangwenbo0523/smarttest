@@ -372,7 +372,14 @@ def run_pipeline(mode: str = "buggy", use_llm: bool = True,
     generator.render_conftest(GENERATED_DIR)
     contract_file = generator.render_contract_tests(spec, cases, GENERATED_DIR)
     products = _fetch_products(dp.values("product_id"))
-    business_file = generator.render_business_tests(products, GENERATED_DIR)
+    business_file = generator.render_business_tests(
+        GENERATED_DIR,
+        "business_test.py.j2",
+        {
+            "products": products,
+            "default_product_id": products[0]["product_id"] if products else "P001",
+        },
+    )
     scenario_file = generator.render_scenario_tests(
         enhancement.scenarios,
         GENERATED_DIR,

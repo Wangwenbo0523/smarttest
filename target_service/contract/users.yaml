@@ -1,0 +1,149 @@
+openapi: 3.0.3
+info:
+  title: 用户与订阅服务（设计契约）
+  version: 2.0.0
+  description: >
+    第二份设计契约。与订单契约同源（都走 OpenAPI 3.x + JSON Schema），
+    但领域和字段形态刻意错开，用来验证规则引擎不是给某一个契约量身定做的：
+
+      - 声明了**必填请求头**（订单契约里唯一的请求头是可选的）
+      - 有**布尔字段**与**枚举字段**（订单契约的请求体里两者都没有）
+      - 路径参数的下界大于 1（订单契约的路径参数下界都是 1）
+      - 有一个**可选的可空字段**，不传与传 null 语义不同（默认 false）
+
+    服务实现必须与契约保持一致，不一致即为缺陷。
+paths:
+  /api/v1/users:
+    post:
+      operationId: createUser
+      tags: [用户]
+      summary: 注册用户
+      parameters:
+        - name: X-Tenant-Id
+          in: header
+          required: true
+          description: 租户标识，必填，长度 4-16。
+          schema:
+            type: string
+            minLength: 4
+            maxLength: 16
+        - name: X-Request-Source
+          in: header
+          required: false
+          description: 调用来源标识，选填。
+          schema:
+            type: string
+            maxLength: 24
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreateRequest'
+      responses:
+        '201':
+          description: 注册成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '404':
+          description: 套餐不存在
+        '422':
+          description: 参数校验失败
+  /api/v1/users/{user_id}:
+    get:
+      operationId: getUser
+      tags: [用户]
+      summary: 查询用户详情
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 4
+            maxLength: 36
+      responses:
+        '200':
+          description: 用户详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '404':
+          description: 用户不存在
+  /api/v1/plans/{plan_code}:
+    get:
+      operationId: getPlan
+      tags: [套餐]
+      summary: 查询套餐详情
+      parameters:
+        - name: plan_code
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 16
+      responses:
+        '200':
+          description: 套餐详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Plan'
+        '404':
+          description: 套餐不存在
+components:
+  schemas:
+    UserCreateRequest:
+      type: object
+      required: [name, email, plan_code]
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 32
+          description: 用户昵称
+        email:
+          type: string
+          minLength: 6
+          maxLength: 64
+          description: 邮箱。服务端统一按小写存储。
+        plan_code:
+          type: string
+          minLength: 2
+          maxLength: 16
+          description: 套餐编码，必须指向一个已存在的套餐
+        age:
+          type: integer
+          minimum: 18
+          maximum: 120
+          description: 年龄，取值 18-120
+        channel:
+          type: string
+          enum: [WEB, APP, PARTNER]
+          description: 注册渠道
+        marketing_opt_in:
+          type: boolean
+          nullable: true
+          description: 是否接收营销信息；不传或传 null 时视为 false
+    User:
+      type: object
+      required: [user_id, name, email, plan_code, created_at]
+      properties:
+        user_id: { type: string }
+        name: { type: string }
+        email: { type: string }
+        plan_code: { type: string }
+        age: { type: integer }
+        marketing_opt_in: { type: boolean }
+        created_at: { type: string, format: date-time }
+    Plan:
+      type: object
+      properties:
+        plan_code: { type: string }
+        name: { type: string }
+        monthly_price: { type: number, minimum: 0 }
+        seat_limit: { type: integer, minimum: 1 }

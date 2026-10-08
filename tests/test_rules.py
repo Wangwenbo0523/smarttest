@@ -284,6 +284,109 @@ class TestPathRules:
         assert "getProduct.product_id.minLength-1" not in ids_of(engine, spec, "getProduct")
 
 
+class TestRequiredHeaderParams:
+    """必填请求头必须出现在每一条用例里。
+
+    这个缺口是第二靶场（用户与订阅服务）逼出来的：第一靶场唯一的请求头
+    Idempotency-Key 是可选的，所以「必填头没带上」这个问题一直没显形。
+    契约一旦声明了必填头，漏带它的用例会被服务先拦成 422，
+    于是被测字段的真实行为根本没被执行到 —— 报出来的全是假阳性。
+    """
+
+    @staticmethod
+    def _users_like(make_operation):
+        from smarttest.ir import Parameter
+
+        return make_operation(
+            parameters=[
+                Parameter(name="X-Tenant-Id", location="header", required=True,
+                          schema={"type": "string", "minLength": 4, "maxLength": 16}),
+                Parameter(name="X-Request-Source", location="header", required=False,
+                          schema={"type": "string", "maxLength": 24}),
+            ],
+            body_schema={
+                "type": "object",
+                "required": ["name"],
+                "properties": {"name": {"type": "string", "minLength": 2, "maxLength": 8}},
+            },
+        )
+
+    def test_required_header_value_is_derived_from_schema(self, make_operation):
+        operation = self._users_like(make_operation)
+        engine = RuleEngine()
+        assert engine._required_headers(operation) == {"X-Tenant-Id": "aaaa"}
+
+    def test_every_body_case_carries_the_required_header(self, make_operation):
+        operation = self._users_like(make_operation)
+        cases = {c.case_id: c for c in RuleEngine()._cases_for_body(operation)}
+        assert cases
+        for case in cases.values():
+            assert case.headers.get("X-Tenant-Id") == "aaaa", case.case_id
+
+    def test_path_cases_carry_the_required_header(self, make_operation):
+        from smarttest.ir import Parameter
+
+        operation = make_operation(
+            method="GET",
+            path="/api/v1/things/{thing_id}",
+            responses={"200": {"description": "ok"}},
+            parameters=[
+                Parameter(name="X-Tenant-Id", location="header", required=True,
+                          schema={"type": "string", "minLength": 4, "maxLength": 16}),
+                Parameter(name="thing_id", location="path", required=True,
+                          schema={"type": "string", "minLength": 1, "maxLength": 8}),
+            ],
+        )
+        cases = RuleEngine()._cases_for_path_params(operation)
+        assert cases
+        assert all(c.headers.get("X-Tenant-Id") == "aaaa" for c in cases)
+
+    def test_optional_header_case_keeps_the_required_one(self, make_operation):
+        operation = self._users_like(make_operation)
+        cases = {c.case_id: c for c in RuleEngine()._cases_for_header_params(operation)}
+        assert cases["op.X-Request-Source.maxLength"].headers == {
+            "X-Tenant-Id": "aaaa",
+            "X-Request-Source": "a" * 24,
+        }
+
+    def test_missing_required_header_case_omits_only_that_header(self, make_operation):
+        from smarttest.ir import Parameter
+
+        operation = make_operation(
+            parameters=[
+                Parameter(name="X-A", location="header", required=True, schema={"type": "string"}),
+                Parameter(name="X-B", location="header", required=True, schema={"type": "string"}),
+            ]
+        )
+        cases = {c.case_id: c for c in RuleEngine()._cases_for_header_params(operation)}
+        # 只摘掉被测的那一个，其余的必填头照常带上 ——
+        # 否则这条用例同时验证了两件事，归因会指错方向。
+        assert cases["op.X-A.required_missing"].headers == {"X-B": "a"}
+        assert cases["op.X-B.required_missing"].headers == {"X-A": "a"}
+
+    def test_operation_without_required_headers_is_unchanged(self, make_operation):
+        # 订单靶场就是这个形态：唯一的请求头可选，用例不该被塞进任何请求头。
+        from smarttest.ir import Parameter
+
+        operation = make_operation(
+            parameters=[
+                Parameter(name="Idempotency-Key", location="header", required=False,
+                          schema={"type": "string", "maxLength": 64}),
+            ],
+            body_schema={
+                "type": "object",
+                "required": ["quantity"],
+                "properties": {"quantity": {"type": "integer", "minimum": 1}},
+            },
+        )
+        cases = {c.case_id: c for c in RuleEngine()._cases_for_operation(operation)}
+        assert cases["op.happy_path"].headers == {}
+        assert cases["op.quantity.minimum-1"].headers == {}
+        assert cases["op.Idempotency-Key.maxLength+1"].headers == {
+            "Idempotency-Key": "a" * 65
+        }
+
+
 class TestCaseMetadata:
     """用例自身的元数据：命名、标记、覆盖统计。"""
 

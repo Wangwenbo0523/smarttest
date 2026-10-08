@@ -49,6 +49,18 @@ jobs:
       - name: 用例生成质量门禁
         run: python run_evals.py --min-recall 100 --min-precision 100
 
+      # 下面三条跑的是**第二靶场**（用户与订阅服务），契约形态与订单服务刻意不同：
+      # 有必填请求头、有枚举与布尔字段、路径参数下界大于 1。
+      # 只在一个契约上跑通说明不了通用性 —— 换一份契约还成立，才是证据。
+      - name: 第二靶场 · 缺陷检出（期望命中 3 个真实缺陷）
+        run: python run_demo.py --target users --port 8124 --target-mode buggy --expect-defects 3 --report-tag users-buggy
+
+      - name: 第二靶场 · 零误报自证（修复版应报 0 个缺陷）
+        run: python run_demo.py --target users --port 8124 --target-mode fixed --expect-defects 0 --report-tag users-fixed
+
+      - name: 第二靶场 · 用例生成质量门禁
+        run: python run_evals.py --target users --min-recall 100 --min-precision 100
+
       # 这一条是「模型能不能被信任」：验证幻觉拦截与降级机制。
       # 用内置的假模型服务，不需要任何 API Key。
       - name: 语义增强层通路与幻觉拦截

@@ -6,11 +6,9 @@
 """
 from __future__ import annotations
 
+import json
 from collections import Counter
 from pathlib import Path
-from typing import Any
-
-import json
 from typing import Any
 
 from jinja2 import Environment, FileSystemLoader
@@ -58,13 +56,21 @@ class PytestGenerator:
         target.write_text(code, encoding="utf-8")
         return target
 
-    def render_business_tests(self, products: list[dict[str, Any]], out_dir: str | Path) -> Path:
+    def render_business_tests(
+        self,
+        out_dir: str | Path,
+        template_name: str = "business_test.py.j2",
+        context: dict[str, Any] | None = None,
+    ) -> Path:
+        """渲染业务层用例。
+
+        业务规则需要领域知识，必然一个靶场一套模板；生成器不内置任何一种，
+        模板名与上下文都由靶场注册表提供（见 smarttest/targets.py）。
+        """
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
-        code = self.env.get_template("business_test.py.j2").render(
-            base_url=self.base_url,
-            products=products,
-            default_product_id=products[0]["product_id"] if products else "P001",
+        code = self.env.get_template(template_name).render(
+            base_url=self.base_url, **(context or {})
         )
         target = out / "test_business_generated.py"
         target.write_text(code, encoding="utf-8")

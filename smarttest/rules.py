@@ -121,10 +121,37 @@ class RuleEngine:
 
     def _cases_for_operation(self, op: Operation) -> list[ValidationCase]:
         cases: list[ValidationCase] = []
+        base_headers = self._required_headers(op)
         if op.body_schema:
-            cases.extend(self._cases_for_body(op))
-        cases.extend(self._cases_for_header_params(op))
-        cases.extend(self._cases_for_path_params(op))
+            cases.extend(self._cases_for_body(op, base_headers))
+        cases.extend(self._cases_for_header_params(op, base_headers))
+        cases.extend(self._cases_for_path_params(op, base_headers))
+        return cases
+
+    def _required_headers(self, op: Operation) -> dict[str, str]:
+        """必填请求头的合法取值。
+
+        契约声明了必填请求头时，**任何**用例都必须带上它 —— 否则被测服务会先
+        因为「缺请求头」返回 422，那条用例就不再是在测它原本要测的字段了。
+
+        这个缺口是第一靶场（订单服务）照不出来的：它唯一的请求头 Idempotency-Key
+        是可选的。第二个靶场（用户服务）声明了必填的 X-Tenant-Id，规则一跑就露了。
+        """
+        return {
+            param.name: str(_valid_value(param.name, param.schema, self.dp))
+            for param in op.header_params()
+            if param.required
+        }
+
+    @staticmethod
+    def _with_base_headers(
+        cases: list[ValidationCase], base_headers: dict[str, str]
+    ) -> list[ValidationCase]:
+        """给一批用例统一补上必填请求头；用例自己声明的请求头优先。"""
+        if not base_headers:
+            return cases
+        for case in cases:
+            case.headers = {**base_headers, **case.headers}
         return cases
 
     def _track(self, op: Operation, field_name: str, basis: str) -> None:
@@ -159,7 +186,10 @@ class RuleEngine:
 
     # ---------- 请求体 ----------
 
-    def _cases_for_body(self, op: Operation) -> list[ValidationCase]:
+    def _cases_for_body(
+        self, op: Operation, base_headers: dict[str, str] | None = None
+    ) -> list[ValidationCase]:
+        base_headers = self._required_headers(op) if base_headers is None else base_headers
         schema = op.body_schema or {}
         props: dict[str, Any] = schema.get("properties", {})
         required: set[str] = set(schema.get("required", []))
@@ -295,11 +325,13 @@ class RuleEngine:
                                    "resource:not_found", field_name=name)
                     )
 
-        return cases
+        return self._with_base_headers(cases, base_headers)
 
     # ---------- 请求头参数 ----------
 
-    def _cases_for_header_params(self, op: Operation) -> list[ValidationCase]:
+    def _cases_for_header_params(
+        self, op: Operation, base_headers: dict[str, str] | None = None
+    ) -> list[ValidationCase]:
         """请求头参数用例。
 
         这一类之前整块缺失，是评测集把它点出来的（见 evals/ground_truth.yaml）——
@@ -308,16 +340,21 @@ class RuleEngine:
         cases: list[ValidationCase] = []
         if not op.header_params():
             return cases
+        if base_headers is None:
+            base_headers = self._required_headers(op)
 
         ok = op.success_status
         base_payload = build_valid_payload(op, self.dp) if op.body_schema else None
 
         for param in op.header_params():
+            # 其余必填请求头照常带上；被测的这个单独构造，避免和「缺必填头」混在一起。
+            others = {k: v for k, v in base_headers.items() if k != param.name}
+
             if param.required:
                 cases.append(
                     self._case(op, f"{param.name}.required_missing", f"缺少必填请求头 {param.name}",
                                base_payload, 422, "required:missing_header",
-                               headers={}, field_name=param.name)
+                               headers=others, field_name=param.name)
                 )
 
             mx = param.schema.get("maxLength")
@@ -326,13 +363,13 @@ class RuleEngine:
                     self._case(op, f"{param.name}.maxLength+1",
                                f"请求头 {param.name} 长度为 {mx+1}（上界+1）",
                                base_payload, 422, f"boundary:maxLength+1={mx+1}",
-                               headers={param.name: "a" * (mx + 1)}, field_name=param.name)
+                               headers={**others, param.name: "a" * (mx + 1)}, field_name=param.name)
                 )
                 cases.append(
                     self._case(op, f"{param.name}.maxLength",
                                f"请求头 {param.name} 长度为 {mx}（上界本身）",
                                base_payload, ok, f"boundary:maxLength={mx}",
-                               headers={param.name: "a" * mx}, field_name=param.name)
+                               headers={**others, param.name: "a" * mx}, field_name=param.name)
                 )
 
             mn = param.schema.get("minLength")
@@ -341,17 +378,20 @@ class RuleEngine:
                     self._case(op, f"{param.name}.minLength-1",
                                f"请求头 {param.name} 长度为 {mn-1}（下界-1）",
                                base_payload, 422, f"boundary:minLength-1={mn-1}",
-                               headers={param.name: "a" * (mn - 1)}, field_name=param.name)
+                               headers={**others, param.name: "a" * (mn - 1)}, field_name=param.name)
                 )
 
         return cases
 
     # ---------- 路径参数 ----------
 
-    def _cases_for_path_params(self, op: Operation) -> list[ValidationCase]:
+    def _cases_for_path_params(
+        self, op: Operation, base_headers: dict[str, str] | None = None
+    ) -> list[ValidationCase]:
         cases: list[ValidationCase] = []
         if not op.path_params():
             return cases
+        base_headers = self._required_headers(op) if base_headers is None else base_headers
         ok = op.success_status
 
         for param in op.path_params():
@@ -387,4 +427,4 @@ class RuleEngine:
                                None, 422, f"boundary:minLength-1={mn-1}", path=resolved_short, field_name=param.name)
                 )
 
-        return cases
+        return self._with_base_headers(cases, base_headers)

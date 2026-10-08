@@ -13,7 +13,7 @@ from typing import Any, Protocol
 
 from ..dataprovider import DataProvider
 from ..ir import ApiSpec, Operation
-from ..rules import build_valid_payload
+from ..rules import _valid_value, build_valid_payload
 from .models import RESPONSE_SCHEMA
 
 # 「状态冲突」类状态码的优先级：重复操作被拒绝时应命中的码
@@ -78,13 +78,13 @@ class RuleBasedScenarioProvider:
             payload = build_valid_payload(creator, dp)
 
             for action in self._resource_actions(spec, collection, creator):
-                scenario = self._lifecycle_scenario(creator, action, payload)
+                scenario = self._lifecycle_scenario(creator, action, payload, dp)
                 if scenario:
                     scenarios.append(scenario)
 
             detail = self._detail_reader(spec, collection, creator)
             if detail:
-                scenario = self._round_trip_scenario(creator, detail, payload)
+                scenario = self._round_trip_scenario(creator, detail, payload, dp)
                 if scenario:
                     scenarios.append(scenario)
 
@@ -120,7 +120,23 @@ class RuleBasedScenarioProvider:
         params = op.path_params()
         return params[0].name if params else None
 
-    def _lifecycle_scenario(self, creator: Operation, action: Operation, payload: dict) -> dict | None:
+    @staticmethod
+    def _required_headers(op: Operation, dp: DataProvider) -> dict[str, str]:
+        """契约声明的必填请求头，必须写进场景步骤。
+
+        漏掉它，被测服务会先返回 422，场景失败就会被归因成服务缺陷 ——
+        一条假阳性。第一靶场的请求头是可选的，这个问题一直没显形，
+        第二个靶场（用户服务）有必填的 X-Tenant-Id，一跑就暴露了。
+        """
+        return {
+            param.name: str(_valid_value(param.name, param.schema, dp))
+            for param in op.header_params()
+            if param.required
+        }
+
+    def _lifecycle_scenario(
+        self, creator: Operation, action: Operation, payload: dict, dp: DataProvider
+    ) -> dict | None:
         id_name = self._id_param(action)
         if not id_name:
             return None
@@ -147,24 +163,29 @@ class RuleBasedScenarioProvider:
             "steps": [
                 {
                     "operation_id": creator.operation_id,
+                    "headers": self._required_headers(creator, dp),
                     "body": payload,
                     "expect_status": creator.success_status,
                     "capture": {id_name: f"$.{id_name}"},
                 },
                 {
                     "operation_id": action.operation_id,
+                    "headers": self._required_headers(action, dp),
                     "path_params": {id_name: ref},
                     "expect_status": action.success_status,
                 },
                 {
                     "operation_id": action.operation_id,
+                    "headers": self._required_headers(action, dp),
                     "path_params": {id_name: ref},
                     "expect_status": conflict,
                 },
             ],
         }
 
-    def _round_trip_scenario(self, creator: Operation, detail: Operation, payload: dict) -> dict | None:
+    def _round_trip_scenario(
+        self, creator: Operation, detail: Operation, payload: dict, dp: DataProvider
+    ) -> dict | None:
         id_name = self._id_param(detail)
         if not id_name or id_name not in creator.response_properties():
             return None
@@ -177,12 +198,14 @@ class RuleBasedScenarioProvider:
             "steps": [
                 {
                     "operation_id": creator.operation_id,
+                    "headers": self._required_headers(creator, dp),
                     "body": payload,
                     "expect_status": creator.success_status,
                     "capture": {id_name: f"$.{id_name}"},
                 },
                 {
                     "operation_id": detail.operation_id,
+                    "headers": self._required_headers(detail, dp),
                     "path_params": {id_name: "{{" + id_name + "}}"},
                     "expect_status": detail.success_status,
                     "expect_body": {f"$.{id_name}": "{{" + id_name + "}}"},
