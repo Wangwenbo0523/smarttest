@@ -11,6 +11,7 @@
 
 > 一页看完成果（含简历写法与 60 秒验证路径）：[docs/RESULTS.md](docs/RESULTS.md)
 > ｜发布说明（中英双语）：[docs/RELEASE_NOTES_v1.0.0.md](docs/RELEASE_NOTES_v1.0.0.md)
+> ｜[GitHub Release v1.0.0](https://github.com/Wangwenbo0523/smarttest/releases/tag/v1.0.0)
 
 ---
 
