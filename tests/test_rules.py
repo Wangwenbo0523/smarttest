@@ -13,7 +13,14 @@ from __future__ import annotations
 
 import pytest
 
-from smarttest.rules import RuleEngine, _valid_value, _wrong_type_value
+from smarttest.dataprovider import DataProvider
+from smarttest.rules import (
+    RuleEngine,
+    _valid_value,
+    _wrong_type_value,
+    build_valid_payload,
+    case_field_path,
+)
 
 
 def cases_of(engine: RuleEngine, spec, operation_id: str):
@@ -385,6 +392,186 @@ class TestRequiredHeaderParams:
         assert cases["op.Idempotency-Key.maxLength+1"].headers == {
             "Idempotency-Key": "a" * 65
         }
+
+
+class TestQueryParamRules:
+    """查询参数用例。
+
+    这一类长期整块缺失：`location: query` 的参数既不生成用例，生成的请求也
+    不带它们。带列表接口的契约（分页、过滤、排序）因此在覆盖上是空的，
+    而且不会报错 —— 第三个靶场（内容服务）把它逼了出来。
+    """
+
+    @staticmethod
+    def _list_like(make_operation):
+        from smarttest.ir import Parameter
+
+        return make_operation(
+            method="GET",
+            path="/api/v1/things",
+            responses={"200": {"description": "ok"}},
+            parameters=[
+                Parameter(name="workspace", location="query", required=True,
+                          schema={"type": "string", "minLength": 2, "maxLength": 24}),
+                Parameter(name="page", location="query", required=False,
+                          schema={"type": "integer", "minimum": 1, "maximum": 50}),
+                Parameter(name="sort", location="query", required=False,
+                          schema={"type": "string", "enum": ["A", "B"]}),
+            ],
+        )
+
+    def test_required_query_param_is_carried_by_every_other_case(self, make_operation):
+        cases = {c.case_id: c for c in RuleEngine()._cases_for_query_params(self._list_like(make_operation))}
+        assert cases["op.workspace.required_missing"].params == {}
+        for case_id, case in cases.items():
+            if case_id == "op.workspace.required_missing":
+                continue
+            # 针对 workspace 自身的用例会改它的取值，但不会不传；
+            # 其余用例一律用合法值，否则测的就不是原字段了
+            assert case.params.get("workspace"), case_id
+        assert cases["op.page.minimum"].params["workspace"] == "aa"
+
+    def test_string_query_param_gets_length_cases_but_no_type_case(self, make_operation):
+        # 线上 query 参数都是字符串，字符串参数不存在「类型不对」这回事
+        cases = {c.case_id: c for c in RuleEngine()._cases_for_query_params(self._list_like(make_operation))}
+        assert "op.workspace.type_mismatch" not in cases
+        assert cases["op.workspace.minLength-1"].params["workspace"] == "a"
+        assert cases["op.workspace.minLength-1"].expected_status == 422
+        assert cases["op.workspace.maxLength"].params["workspace"] == "a" * 24
+        assert cases["op.workspace.maxLength"].expected_status == 200
+
+    def test_numeric_query_param_gets_type_and_range_cases(self, make_operation):
+        cases = {c.case_id: c for c in RuleEngine()._cases_for_query_params(self._list_like(make_operation))}
+        assert cases["op.page.type_mismatch"].params["page"] == "not-an-integer"
+        assert cases["op.page.type_mismatch"].expected_status == 422
+        assert cases["op.page.minimum-1"].params["page"] == 0
+        assert cases["op.page.minimum-1"].expected_status == 422
+        assert cases["op.page.minimum"].params["page"] == 1
+        assert cases["op.page.maximum+1"].params["page"] == 51
+        assert cases["op.page.maximum"].expected_status == 200
+
+    def test_enum_query_param_gets_valid_and_invalid_cases(self, make_operation):
+        cases = {c.case_id: c for c in RuleEngine()._cases_for_query_params(self._list_like(make_operation))}
+        assert cases["op.sort.enum.A"].params["sort"] == "A"
+        assert cases["op.sort.enum.A"].expected_status == 200
+        assert cases["op.sort.enum.invalid"].params["sort"] == "__INVALID_ENUM__"
+        assert cases["op.sort.enum.invalid"].expected_status == 422
+
+    def test_operation_without_query_params_produces_nothing(self, spec):
+        assert RuleEngine()._cases_for_query_params(spec.find("getProduct")) == []
+
+    def test_query_cases_also_carry_required_headers(self, make_operation):
+        from smarttest.ir import Parameter
+
+        operation = make_operation(
+            method="GET",
+            path="/api/v1/things",
+            responses={"200": {"description": "ok"}},
+            parameters=[
+                Parameter(name="X-Tenant-Id", location="header", required=True,
+                          schema={"type": "string", "minLength": 4}),
+                Parameter(name="workspace", location="query", required=True,
+                          schema={"type": "string", "minLength": 2}),
+            ],
+        )
+        cases = RuleEngine()._cases_for_query_params(operation)
+        assert cases
+        assert all(c.headers.get("X-Tenant-Id") == "aaaa" for c in cases)
+
+
+class TestNestedBodyFields:
+    """嵌套对象里的字段。第三个靶场的 author 对象逼出了这一层。"""
+
+    @staticmethod
+    def _nested(make_operation):
+        return make_operation(
+            body_schema={
+                "type": "object",
+                "required": ["title", "author"],
+                "properties": {
+                    "title": {"type": "string", "minLength": 3},
+                    "author": {
+                        "type": "object",
+                        "required": ["name"],
+                        "properties": {
+                            "name": {"type": "string", "minLength": 2, "maxLength": 8},
+                            "age": {"type": "integer", "minimum": 18},
+                        },
+                    },
+                },
+            }
+        )
+
+    def test_valid_payload_builds_nested_objects(self, make_operation):
+        # 给个空字典的话，契约里必填的嵌套字段会直接把基准用例打成失败
+        payload = build_valid_payload(self._nested(make_operation), DataProvider())
+        assert payload["author"] == {"name": "aa", "age": 18}
+
+    def test_array_min_items_is_respected(self, make_operation):
+        operation = make_operation(
+            body_schema={
+                "type": "object",
+                "properties": {"tags": {"type": "array", "minItems": 2, "items": {"type": "string"}}},
+            }
+        )
+        payload = build_valid_payload(operation, DataProvider())
+        assert len(payload["tags"]) == 2
+
+    def test_object_without_properties_falls_back_to_empty_dict(self, make_operation):
+        operation = make_operation(
+            body_schema={"type": "object", "properties": {"meta": {"type": "object"}}}
+        )
+        assert build_valid_payload(operation, DataProvider())["meta"] == {}
+
+    def test_nested_fields_are_expanded(self, make_operation):
+        operation = self._nested(make_operation)
+        engine = RuleEngine()
+        labels = {t.label for t in engine._body_targets(operation, build_valid_payload(operation, DataProvider()))}
+        assert labels == {"title", "author", "author.name", "author.age"}
+
+    def test_nested_required_missing_keeps_the_parent_object(self, make_operation):
+        cases = {c.case_id: c for c in RuleEngine()._cases_for_body(self._nested(make_operation))}
+        # 缺嵌套必填字段时，父对象仍在（只少那一个字段）——
+        # 否则测的就变成「整个对象都没传」，归因会指错方向
+        assert cases["op.author.name.required_missing"].payload["author"] == {"age": 18}
+        assert "author" not in cases["op.author.required_missing"].payload
+
+    def test_nested_boundaries_are_generated(self, make_operation):
+        cases = {c.case_id: c for c in RuleEngine()._cases_for_body(self._nested(make_operation))}
+        assert cases["op.author.name.maxLength+1"].payload["author"]["name"] == "a" * 9
+        assert cases["op.author.name.minLength-1"].payload["author"]["name"] == "a"
+        assert cases["op.author.age.minimum-1"].payload["author"]["age"] == 17
+        assert cases["op.author.age.minimum"].expected_status == 201
+
+    def test_case_payloads_are_independent_copies(self, make_operation):
+        # 每条用例拿一份独立的深拷贝，否则一条用例的改动会渗到另一条上去
+        cases = RuleEngine()._cases_for_body(self._nested(make_operation))
+        happy = next(c for c in cases if c.case_id.endswith("happy_path"))
+        other = next(c for c in cases if c.case_id.endswith("author.name.maxLength+1"))
+        assert happy.payload["author"] is not other.payload["author"]
+        happy.payload["author"]["name"] = "改过了"
+        assert other.payload["author"]["name"] != "改过了"
+
+
+class TestCaseFieldPath:
+    """case_id -> 字段路径。评测与归因都靠它，取错了会把两个字段混成一个。"""
+
+    @pytest.mark.parametrize(
+        ("case_id", "expected"),
+        [
+            ("createOrder.quantity.minimum-1", "quantity"),
+            ("createOrder.X-Tenant-Id.required_missing", "X-Tenant-Id"),
+            ("createArticle.author.name.maxLength+1", "author.name"),
+            ("createArticle.author.email.required_missing", "author.email"),
+            ("createArticle.status.enum.DRAFT", "status"),
+            ("createUser.channel.enum.invalid", "channel"),
+            # 两段式无法区分 operationId 与字段名，保持原样（这类 id 只有基准用例）
+            ("createOrder.happy_path", "createOrder.happy_path"),
+            ("scn_round_trip", "scn_round_trip"),
+        ],
+    )
+    def test_extraction(self, case_id, expected):
+        assert case_field_path(case_id) == expected
 
 
 class TestCaseMetadata:

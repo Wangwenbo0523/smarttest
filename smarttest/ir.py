@@ -53,6 +53,9 @@ class Operation:
     def header_params(self) -> list[Parameter]:
         return [p for p in self.parameters if p.location == "header"]
 
+    def query_params(self) -> list[Parameter]:
+        return [p for p in self.parameters if p.location == "query"]
+
     @property
     def signature(self) -> str:
         return f"{self.method} {self.path}"

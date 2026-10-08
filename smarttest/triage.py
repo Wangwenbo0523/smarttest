@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass, field as dc_field
 
 from .runner import CaseResult, RunSummary
+from .rules import case_field_path
 
 REAL_DEFECT = "真实缺陷"
 ENV_ISSUE = "环境问题"
@@ -108,8 +109,8 @@ def _coarse(basis: str) -> str:
 
 
 def _field_of(case_id: str) -> str:
-    parts = case_id.split(".")
-    return parts[1] if len(parts) >= 2 else case_id
+    """字段路径。嵌套字段保留点分路径（author.name），否则归并会把两个字段混成一个。"""
+    return case_field_path(case_id)
 
 
 @dataclass

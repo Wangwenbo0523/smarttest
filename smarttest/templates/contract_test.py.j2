@@ -23,6 +23,7 @@ CASES = [
         "path": {{ c.path|pyrepr }},
         "payload": {{ c.payload|pyrepr }},
         "headers": {{ c.headers|pyrepr }},
+        "params": {{ c.params|pyrepr }},
         "expected": {{ c.expected_status }},
         "basis": {{ c.design_basis|pyrepr }},
     },
@@ -38,6 +39,7 @@ def test_contract(client, case):
         BASE_URL + case["path"],
         json=case["payload"],
         headers=case["headers"],
+        params=case["params"],
     )
     assert resp.status_code == case["expected"], (
         f"[kind=contract][case_id={case['case_id']}][basis={case['basis']}]"

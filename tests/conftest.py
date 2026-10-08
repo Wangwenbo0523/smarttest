@@ -106,3 +106,45 @@ def marker():
         return text
 
     return _make
+
+
+def _bounds_problems(field: str, value, constraints: dict[str, dict]) -> list[str]:
+    schema = constraints.get(field)
+    if not schema or not isinstance(value, str):
+        return []
+    problems: list[str] = []
+    minimum = schema.get("minLength")
+    maximum = schema.get("maxLength")
+    if isinstance(minimum, int) and len(value) < minimum:
+        problems.append(f"{field}={value!r} 短于契约下界 {minimum}")
+    if isinstance(maximum, int) and len(value) > maximum:
+        problems.append(f"{field}={value!r} 超过契约上界 {maximum}")
+    return problems
+
+
+@pytest.fixture
+def dataset_bounds_checker():
+    """校验数据字典里的取值满足契约声明的长度约束。
+
+    这里踩过一个真实的坑：「资源不存在」用的值如果超出契约声明的 maxLength，
+    正确实现会先返回 422（参数非法）而不是 404（资源不存在）——
+    用例期望错了，修复版靶场就会报出一条不存在的缺陷。
+    """
+
+    def _check(spec, dp) -> list[str]:
+        constraints: dict[str, dict] = {}
+        for op in spec.operations:
+            for name, sub in (op.body_schema or {}).get("properties", {}).items():
+                constraints.setdefault(name, sub)
+            for param in op.parameters:
+                constraints.setdefault(param.name, param.schema)
+
+        problems: list[str] = []
+        for field, values in dp.valid.items():
+            for value in (values if isinstance(values, list) else [values]):
+                problems += _bounds_problems(field, value, constraints)
+        for field, value in dp.unknown.items():
+            problems += _bounds_problems(field, value, constraints)
+        return problems
+
+    return _check

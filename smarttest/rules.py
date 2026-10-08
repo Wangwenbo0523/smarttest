@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -40,6 +41,7 @@ class ValidationCase:
     headers: dict[str, str]
     expected_status: int
     design_basis: str
+    params: dict[str, Any] = field(default_factory=dict)
 
     def marker(self) -> str:
         """失败时写进断言消息的机器可读标记，供归因模块解析。"""
@@ -58,6 +60,26 @@ class FieldCoverage:
     bases: set[str] = field(default_factory=set)
 
 
+@dataclass
+class FieldTarget:
+    """请求体里要逐字段覆盖的目标：从根开始的路径 + 它自己的约束。"""
+
+    path: tuple[str, ...]
+    schema: dict[str, Any]
+    required: bool
+    is_resource: bool
+
+    @property
+    def label(self) -> str:
+        """写进 case_id 的名字。嵌套字段是 author.name 这种点分路径。"""
+        return ".".join(self.path)
+
+    @property
+    def leaf(self) -> str:
+        """数据字典按字段名查，取路径最后一段。"""
+        return self.path[-1]
+
+
 def _wrong_type_value(schema: dict[str, Any]) -> Any:
     """构造一个「类型一定不对」的值。"""
     return {
@@ -70,7 +92,10 @@ def _wrong_type_value(schema: dict[str, Any]) -> Any:
     }.get(schema.get("type"), 12345)
 
 
-def _valid_value(field_name: str, schema: dict[str, Any], dp: DataProvider) -> Any:
+_MAX_NESTING = 3
+
+
+def _valid_value(field_name: str, schema: dict[str, Any], dp: DataProvider, depth: int = 0) -> Any:
     """构造一个「合法」的值。优先取真实数据，其次取 schema 下界。"""
     if dp.has(field_name):
         return dp.first(field_name)
@@ -89,9 +114,19 @@ def _valid_value(field_name: str, schema: dict[str, Any], dp: DataProvider) -> A
     if kind == "boolean":
         return True
     if kind == "array":
-        return []
+        # 数组至少要凑够 minItems 个元素，否则「合法请求」本身就是非法的
+        item_schema = schema.get("items") or {}
+        return [
+            _valid_value(f"{field_name}_item", item_schema, dp, depth + 1)
+            for _ in range(max(int(schema.get("minItems", 0)), 0))
+        ]
     if kind == "object":
-        return {}
+        # 嵌套对象要按它自己的 properties 递归构造：给个空字典的话，
+        # 契约里必填的嵌套字段会直接把基准用例打成失败。
+        props = schema.get("properties") or {}
+        if depth >= _MAX_NESTING or not props:
+            return {}
+        return {name: _valid_value(name, sub, dp, depth + 1) for name, sub in props.items()}
     if kind == "string":
         length = max(int(schema.get("minLength", 1)), 1)
         return "a" * length
@@ -102,6 +137,30 @@ def build_valid_payload(op: Operation, dp: DataProvider) -> dict[str, Any]:
     """构造该接口的一份合法请求体。场景层也复用它，避免两处各写一套数据逻辑。"""
     props = (op.body_schema or {}).get("properties", {})
     return {name: _valid_value(name, sub, dp) for name, sub in props.items()}
+
+
+def case_field_path(case_id: str) -> str:
+    """从 case_id 里取出字段路径（去掉 operationId 前缀与用例后缀）。
+
+    createOrder.quantity.minimum-1         -> quantity
+    createArticle.author.name.maxLength+1  -> author.name
+    createArticle.status.enum.DRAFT        -> status
+    scn_round_trip                         -> scn_round_trip
+
+    评测与失败归因都用它当字段名。嵌套字段必须保留点分路径 ——
+    否则 author.name 与 author.email 会被算成同一个字段，
+    一个缺陷会盖住另一个。
+    """
+    parts = case_id.split(".")
+    if len(parts) < 2:
+        return case_id
+    body = parts[1:]
+    # 枚举用例的后缀是「enum + 取值」两段，其余用例都是一段
+    if len(body) >= 2 and body[-2] == "enum":
+        body = body[:-2]
+    else:
+        body = body[:-1]
+    return ".".join(body) if body else case_id
 
 
 class RuleEngine:
@@ -124,6 +183,7 @@ class RuleEngine:
         base_headers = self._required_headers(op)
         if op.body_schema:
             cases.extend(self._cases_for_body(op, base_headers))
+        cases.extend(self._cases_for_query_params(op, base_headers))
         cases.extend(self._cases_for_header_params(op, base_headers))
         cases.extend(self._cases_for_path_params(op, base_headers))
         return cases
@@ -167,6 +227,7 @@ class RuleEngine:
         expected_status: int,
         design_basis: str,
         headers: dict[str, str] | None = None,
+        params: dict[str, Any] | None = None,
         path: str | None = None,
         field_name: str | None = None,
     ) -> ValidationCase:
@@ -182,6 +243,7 @@ class RuleEngine:
             headers=headers or {},
             expected_status=expected_status,
             design_basis=design_basis,
+            params=params or {},
         )
 
     # ---------- 请求体 ----------
@@ -190,9 +252,6 @@ class RuleEngine:
         self, op: Operation, base_headers: dict[str, str] | None = None
     ) -> list[ValidationCase]:
         base_headers = self._required_headers(op) if base_headers is None else base_headers
-        schema = op.body_schema or {}
-        props: dict[str, Any] = schema.get("properties", {})
-        required: set[str] = set(schema.get("required", []))
         ok = op.success_status
         cases: list[ValidationCase] = []
 
@@ -203,22 +262,23 @@ class RuleEngine:
             self._case(op, "happy_path", "全部参数合法，应创建成功", dict(base), ok, "baseline:valid_payload")
         )
 
-        for name, sub in props.items():
-            is_resource = self.dp.has(name)
+        for target in self._body_targets(op, base):
+            name = target.label
+            sub = target.schema
+            is_resource = target.is_resource
 
             # 1. 必填缺失
-            if name in required:
-                payload = {k: v for k, v in base.items() if k != name}
+            if target.required:
                 cases.append(
-                    self._case(op, f"{name}.required_missing", f"缺少必填字段 {name}", payload, 422,
+                    self._case(op, f"{name}.required_missing", f"缺少必填字段 {name}",
+                               self._drop_path(base, target.path), 422,
                                "required:missing", field_name=name)
                 )
 
             # 2. 类型错误
-            payload = dict(base)
-            payload[name] = _wrong_type_value(sub)
             cases.append(
-                self._case(op, f"{name}.type_mismatch", f"{name} 类型错误", payload, 422,
+                self._case(op, f"{name}.type_mismatch", f"{name} 类型错误",
+                           self._set_path(base, target.path, _wrong_type_value(sub)), 422,
                            f"type:{sub.get('type')}=wrong", field_name=name)
             )
 
@@ -226,33 +286,29 @@ class RuleEngine:
             if sub.get("type") == "string":
                 mn, mx = sub.get("minLength"), sub.get("maxLength")
                 if isinstance(mn, int) and mn > 0:
-                    payload = dict(base)
-                    payload[name] = "a" * (mn - 1)
                     cases.append(
-                        self._case(op, f"{name}.minLength-1", f"{name} 长度为 {mn-1}（下界-1）", payload, 422,
+                        self._case(op, f"{name}.minLength-1", f"{name} 长度为 {mn-1}（下界-1）",
+                                   self._set_path(base, target.path, "a" * (mn - 1)), 422,
                                    f"boundary:minLength-1={mn-1}", field_name=name)
                     )
                 if isinstance(mx, int):
-                    payload = dict(base)
-                    payload[name] = "a" * (mx + 1)
                     cases.append(
-                        self._case(op, f"{name}.maxLength+1", f"{name} 长度为 {mx+1}（上界+1）", payload, 422,
+                        self._case(op, f"{name}.maxLength+1", f"{name} 长度为 {mx+1}（上界+1）",
+                                   self._set_path(base, target.path, "a" * (mx + 1)), 422,
                                    f"boundary:maxLength+1={mx+1}", field_name=name)
                     )
                 if isinstance(mx, int) and not is_resource:
                     # 上界本身（接受侧）。只测「上界+1 被拒绝」是不够的 ——
                     # 还得证明「刚好取到上界时能正常通过」，否则边界覆盖是残的。
-                    payload = dict(base)
-                    payload[name] = "a" * mx
                     cases.append(
-                        self._case(op, f"{name}.maxLength", f"{name} 长度为 {mx}（上界本身）", payload, ok,
+                        self._case(op, f"{name}.maxLength", f"{name} 长度为 {mx}（上界本身）",
+                                   self._set_path(base, target.path, "a" * mx), ok,
                                    f"boundary:maxLength={mx}", field_name=name)
                     )
                 if isinstance(mn, int) and mn > 0 and not is_resource:
-                    payload = dict(base)
-                    payload[name] = "a" * mn
                     cases.append(
-                        self._case(op, f"{name}.minLength", f"{name} 长度为 {mn}（下界）", payload, ok,
+                        self._case(op, f"{name}.minLength", f"{name} 长度为 {mn}（下界）",
+                                   self._set_path(base, target.path, "a" * mn), ok,
                                    f"boundary:minLength={mn}", field_name=name)
                     )
 
@@ -260,70 +316,260 @@ class RuleEngine:
             if sub.get("type") in ("integer", "number"):
                 mn, mx = sub.get("minimum"), sub.get("maximum")
                 if mn is not None:
-                    payload = dict(base)
-                    payload[name] = mn - 1
                     cases.append(
-                        self._case(op, f"{name}.minimum-1", f"{name} 取 {mn-1}（下界-1）", payload, 422,
+                        self._case(op, f"{name}.minimum-1", f"{name} 取 {mn-1}（下界-1）",
+                                   self._set_path(base, target.path, mn - 1), 422,
                                    f"boundary:minimum-1={mn-1}", field_name=name)
                     )
                 if mx is not None:
-                    payload = dict(base)
-                    payload[name] = mx + 1
                     cases.append(
-                        self._case(op, f"{name}.maximum+1", f"{name} 取 {mx+1}（上界+1）", payload, 422,
+                        self._case(op, f"{name}.maximum+1", f"{name} 取 {mx+1}（上界+1）",
+                                   self._set_path(base, target.path, mx + 1), 422,
                                    f"boundary:maximum+1={mx+1}", field_name=name)
                     )
                 if not is_resource:
                     if mn is not None:
-                        payload = dict(base)
-                        payload[name] = mn
                         cases.append(
-                            self._case(op, f"{name}.minimum", f"{name} 取 {mn}（下界）", payload, ok,
+                            self._case(op, f"{name}.minimum", f"{name} 取 {mn}（下界）",
+                                       self._set_path(base, target.path, mn), ok,
                                        f"boundary:minimum={mn}", field_name=name)
                         )
                     if mx is not None:
-                        payload = dict(base)
-                        payload[name] = mx
                         cases.append(
-                            self._case(op, f"{name}.maximum", f"{name} 取 {mx}（上界）", payload, ok,
+                            self._case(op, f"{name}.maximum", f"{name} 取 {mx}（上界）",
+                                       self._set_path(base, target.path, mx), ok,
                                        f"boundary:maximum={mx}", field_name=name)
                         )
 
             # 5. 枚举
             if "enum" in sub:
                 for value in sub["enum"]:
-                    payload = dict(base)
-                    payload[name] = value
                     cases.append(
-                        self._case(op, f"{name}.enum.{value}", f"{name} 取合法枚举 {value}", payload, ok,
+                        self._case(op, f"{name}.enum.{value}", f"{name} 取合法枚举 {value}",
+                                   self._set_path(base, target.path, value), ok,
                                    f"enum:valid={value}", field_name=name)
                     )
-                payload = dict(base)
-                payload[name] = "__INVALID_ENUM__"
                 cases.append(
-                    self._case(op, f"{name}.enum.invalid", f"{name} 取非法枚举值", payload, 422,
+                    self._case(op, f"{name}.enum.invalid", f"{name} 取非法枚举值",
+                               self._set_path(base, target.path, "__INVALID_ENUM__"), 422,
                                "enum:invalid", field_name=name)
                 )
 
             # 6. 可空字段传 null
-            if sub.get("nullable") and name not in required:
-                payload = dict(base)
-                payload[name] = None
+            if sub.get("nullable") and not target.required:
                 cases.append(
-                    self._case(op, f"{name}.null", f"{name} 显式传 null（契约允许）", payload, ok,
+                    self._case(op, f"{name}.null", f"{name} 显式传 null（契约允许）",
+                               self._set_path(base, target.path, None), ok,
                                "nullable:null", field_name=name)
                 )
 
             # 7. 资源引用不存在
             if is_resource:
-                unknown_value = self.dp.unknown_value(name)
+                unknown_value = self.dp.unknown_value(target.leaf)
                 if unknown_value is not None:
-                    payload = dict(base)
-                    payload[name] = unknown_value
                     cases.append(
-                        self._case(op, f"{name}.not_found", f"{name} 指向不存在的资源", payload, 404,
+                        self._case(op, f"{name}.not_found", f"{name} 指向不存在的资源",
+                                   self._set_path(base, target.path, unknown_value), 404,
                                    "resource:not_found", field_name=name)
                     )
+
+        return self._with_base_headers(cases, base_headers)
+
+    # ---------- 请求体字段目标 ----------
+
+    def _body_targets(self, op: Operation, base: dict[str, Any]) -> list[FieldTarget]:
+        """展开请求体里需要逐字段覆盖的目标。
+
+        顶层字段总是展开；对象字段再往里走一层 —— 嵌套对象的必填、类型、
+        长度与数值边界同样能被测到。深度上限设成两层是刻意的：再往下用例
+        数量会成倍增长，而真实契约里三层以上的必填嵌套很少见。
+
+        这个能力是第三靶场（内容服务）逼出来的：它的请求体里有个必填的
+        author 对象，只测顶层字段等于把里面两个必填字段整块漏掉。
+        """
+        schema = op.body_schema or {}
+        required = set(schema.get("required", []))
+        targets: list[FieldTarget] = []
+
+        for name, sub in (schema.get("properties") or {}).items():
+            targets.append(self._field_target((name,), sub, name in required))
+            if sub.get("type") == "object" and isinstance(base.get(name), dict):
+                nested_required = set(sub.get("required", []))
+                for nested_name, nested_schema in (sub.get("properties") or {}).items():
+                    targets.append(
+                        self._field_target(
+                            (name, nested_name), nested_schema, nested_name in nested_required
+                        )
+                    )
+        return targets
+
+    def _field_target(
+        self, path: tuple[str, ...], schema: dict[str, Any], required: bool
+    ) -> FieldTarget:
+        return FieldTarget(
+            path=path, schema=schema, required=required, is_resource=self.dp.has(path[-1])
+        )
+
+    @staticmethod
+    def _set_path(base: dict[str, Any], path: tuple[str, ...], value: Any) -> dict[str, Any]:
+        """复制请求体，并把某个（可能嵌套的）字段设成指定值。
+
+        每个用例都拿一份独立的深拷贝：用例之间不能共享可变结构，
+        否则一条用例的改动会渗到另一条上去，失败归因就会指错字段。
+        """
+        payload = copy.deepcopy(base)
+        cursor = payload
+        for key in path[:-1]:
+            cursor = cursor[key]
+        cursor[path[-1]] = value
+        return payload
+
+    @staticmethod
+    def _drop_path(base: dict[str, Any], path: tuple[str, ...]) -> dict[str, Any]:
+        """复制请求体并删掉某个（可能嵌套的）字段，用于「必填缺失」用例。"""
+        payload = copy.deepcopy(base)
+        cursor = payload
+        for key in path[:-1]:
+            cursor = cursor[key]
+        cursor.pop(path[-1], None)
+        return payload
+
+    # ---------- 查询参数 ----------
+
+    def _cases_for_query_params(
+        self, op: Operation, base_headers: dict[str, str] | None = None
+    ) -> list[ValidationCase]:
+        """查询参数用例。
+
+        这一类之前整块缺失：`location: query` 的参数既不生成用例，生成的请求
+        也不会带上它们。带列表接口的契约（分页、过滤、搜索）因此完全没有覆盖，
+        而且不会报错 —— 第三靶场（内容服务）把它逼了出来。
+
+        与请求体有一处差别：query 参数在线上都是字符串，「类型错误」只对数值
+        与布尔参数才有意义；字符串参数不可能类型错，只有长度和枚举。
+        """
+        cases: list[ValidationCase] = []
+        params = op.query_params()
+        if not params:
+            return cases
+        if base_headers is None:
+            base_headers = self._required_headers(op)
+
+        ok = op.success_status
+        base_payload = build_valid_payload(op, self.dp) if op.body_schema else None
+        # 必填查询参数要出现在其余每一条用例里，理由与必填请求头相同
+        base_params = {
+            p.name: _valid_value(p.name, p.schema, self.dp) for p in params if p.required
+        }
+
+        for param in params:
+            others = {k: v for k, v in base_params.items() if k != param.name}
+            kind = param.schema.get("type")
+            is_resource = self.dp.has(param.name)
+
+            if param.required:
+                cases.append(
+                    self._case(op, f"{param.name}.required_missing",
+                               f"缺少必填查询参数 {param.name}", base_payload, 422,
+                               "required:missing_query", params=others, field_name=param.name)
+                )
+
+            if kind in ("integer", "number", "boolean"):
+                cases.append(
+                    self._case(op, f"{param.name}.type_mismatch",
+                               f"查询参数 {param.name} 类型错误", base_payload, 422,
+                               f"type:{kind}=wrong",
+                               params={**others, param.name: _wrong_type_value(param.schema)},
+                               field_name=param.name)
+                )
+
+            if kind == "string":
+                mn, mx = param.schema.get("minLength"), param.schema.get("maxLength")
+                if isinstance(mn, int) and mn > 0:
+                    cases.append(
+                        self._case(op, f"{param.name}.minLength-1",
+                                   f"查询参数 {param.name} 长度为 {mn-1}（下界-1）",
+                                   base_payload, 422, f"boundary:minLength-1={mn-1}",
+                                   params={**others, param.name: "a" * (mn - 1)},
+                                   field_name=param.name)
+                    )
+                if isinstance(mx, int):
+                    cases.append(
+                        self._case(op, f"{param.name}.maxLength+1",
+                                   f"查询参数 {param.name} 长度为 {mx+1}（上界+1）",
+                                   base_payload, 422, f"boundary:maxLength+1={mx+1}",
+                                   params={**others, param.name: "a" * (mx + 1)},
+                                   field_name=param.name)
+                    )
+                if isinstance(mx, int) and not is_resource:
+                    cases.append(
+                        self._case(op, f"{param.name}.maxLength",
+                                   f"查询参数 {param.name} 长度为 {mx}（上界本身）",
+                                   base_payload, ok, f"boundary:maxLength={mx}",
+                                   params={**others, param.name: "a" * mx},
+                                   field_name=param.name)
+                    )
+                if isinstance(mn, int) and mn > 0 and not is_resource:
+                    cases.append(
+                        self._case(op, f"{param.name}.minLength",
+                                   f"查询参数 {param.name} 长度为 {mn}（下界）",
+                                   base_payload, ok, f"boundary:minLength={mn}",
+                                   params={**others, param.name: "a" * mn},
+                                   field_name=param.name)
+                    )
+
+            if kind in ("integer", "number"):
+                mn, mx = param.schema.get("minimum"), param.schema.get("maximum")
+                if mn is not None:
+                    cases.append(
+                        self._case(op, f"{param.name}.minimum-1",
+                                   f"查询参数 {param.name} 取 {mn-1}（下界-1）",
+                                   base_payload, 422, f"boundary:minimum-1={mn-1}",
+                                   params={**others, param.name: mn - 1},
+                                   field_name=param.name)
+                    )
+                if mx is not None:
+                    cases.append(
+                        self._case(op, f"{param.name}.maximum+1",
+                                   f"查询参数 {param.name} 取 {mx+1}（上界+1）",
+                                   base_payload, 422, f"boundary:maximum+1={mx+1}",
+                                   params={**others, param.name: mx + 1},
+                                   field_name=param.name)
+                    )
+                if not is_resource:
+                    if mn is not None:
+                        cases.append(
+                            self._case(op, f"{param.name}.minimum",
+                                       f"查询参数 {param.name} 取 {mn}（下界）",
+                                       base_payload, ok, f"boundary:minimum={mn}",
+                                       params={**others, param.name: mn},
+                                       field_name=param.name)
+                        )
+                    if mx is not None:
+                        cases.append(
+                            self._case(op, f"{param.name}.maximum",
+                                       f"查询参数 {param.name} 取 {mx}（上界）",
+                                       base_payload, ok, f"boundary:maximum={mx}",
+                                       params={**others, param.name: mx},
+                                       field_name=param.name)
+                        )
+
+            if "enum" in param.schema:
+                for value in param.schema["enum"]:
+                    cases.append(
+                        self._case(op, f"{param.name}.enum.{value}",
+                                   f"查询参数 {param.name} 取合法枚举 {value}",
+                                   base_payload, ok, f"enum:valid={value}",
+                                   params={**others, param.name: value},
+                                   field_name=param.name)
+                    )
+                cases.append(
+                    self._case(op, f"{param.name}.enum.invalid",
+                               f"查询参数 {param.name} 取非法枚举值",
+                               base_payload, 422, "enum:invalid",
+                               params={**others, param.name: "__INVALID_ENUM__"},
+                               field_name=param.name)
+                )
 
         return self._with_base_headers(cases, base_headers)
 

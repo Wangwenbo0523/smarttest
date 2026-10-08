@@ -30,7 +30,7 @@ import yaml  # noqa: E402
 
 from smarttest.dataprovider import DataProvider  # noqa: E402
 from smarttest.parser import OpenApiParser  # noqa: E402
-from smarttest.rules import RuleEngine  # noqa: E402
+from smarttest.rules import RuleEngine, case_field_path  # noqa: E402
 from smarttest.targets import Target, get_target, target_keys  # noqa: E402
 
 
@@ -55,7 +55,7 @@ def collect_generated(target: Target) -> dict[str, str]:
         basis = case.design_basis.split("=")[0]
         if basis.startswith("baseline:"):
             continue  # 基准用例不属于参数覆盖范畴
-        field_name = case.case_id.split(".")[1] if "." in case.case_id else case.case_id
+        field_name = case_field_path(case.case_id)
         signatures[f"{case.operation_id}::{field_name}::{basis}"] = case.case_id
     return signatures
 

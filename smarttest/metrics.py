@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .ir import ApiSpec
-from .rules import ValidationCase
+from .rules import ValidationCase, case_field_path
 from .runner import RunSummary
 from .triage import CASE_ISSUE, REAL_DEFECT, Triage
 
@@ -66,7 +66,7 @@ class MetricsReporter:
             basis_counter[basis] += 1
             if basis.startswith("baseline:"):
                 continue  # 基准用例不对应具体字段
-            field = case.case_id.split(".")[1] if "." in case.case_id else case.case_id
+            field = case_field_path(case.case_id)
             field_coverage.setdefault(field, set()).add(basis)
 
         return MetricsSnapshot(
