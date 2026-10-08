@@ -33,6 +33,12 @@ jobs:
       - name: 规则引擎单元测试
         run: python -m pytest -q
 
+      # 这一条是「测试不许变少」：实测核心模块覆盖率 98%
+      # （编排层与 Jinja2 模板不计入口径，它们由下面的端到端门禁覆盖）。
+      # 阈值取 95，留一点余量给不同 Python 版本的语句差异，但足以拦住明显回退。
+      - name: 单元测试覆盖率门禁
+        run: python -m pytest -q --cov=smarttest --cov-report=term-missing --cov-fail-under=95
+
       # 这一条是「能不能发现问题」：靶场注入了 3 个缺陷，
       # 补全覆盖后又暴露出 1 处契约漂移，所以期望命中 4 个。
       # 数量对不上说明规则引擎漏了或误报了。

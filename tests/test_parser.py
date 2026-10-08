@@ -272,3 +272,16 @@ class TestLoading:
 
     def test_empty_paths_produce_empty_spec(self):
         assert OpenApiParser(minimal_document({})).parse().operations == []
+
+    def test_load_from_url(self, tmp_path):
+        # 从 URL 拉契约走的是 urllib；用 file:// URI 就能覆盖这条路径，
+        # 不必为了单测起一个 HTTP 服务
+        payload = minimal_document(
+            {"/x": {"get": {"operationId": "x", "responses": {"200": {"description": "ok"}}}}}
+        )
+        path = tmp_path / "contract.json"
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+        spec = OpenApiParser.from_url(path.as_uri()).parse()
+
+        assert spec.find("x") is not None

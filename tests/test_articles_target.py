@@ -75,11 +75,11 @@ class TestContractShape:
 
 class TestGenerationParity:
     def test_eval_signatures_match_exactly(self):
-        import run_evals
+        from smarttest import evaluation
 
         target = get_target("articles")
-        expected = run_evals.load_ground_truth(target)
-        generated = run_evals.collect_generated(target)
+        expected = evaluation.load_ground_truth(target)
+        generated = evaluation.collect_generated(target)
         assert set(expected) - set(generated) == set(), "有该测却没生成的用例"
         assert set(generated) - set(expected) == set(), "生成了标注集以外的用例"
         assert len(expected) == 57

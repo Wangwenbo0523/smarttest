@@ -108,11 +108,11 @@ class TestGenerationParity:
 
     def test_eval_signatures_match_exactly(self):
         # 直接复用评测脚本的实现，保证「门禁里跑的那套」和「单测里跑的」是同一套口径。
-        import run_evals
+        from smarttest import evaluation
 
         target = get_target("users")
-        expected = run_evals.load_ground_truth(target)
-        generated = run_evals.collect_generated(target)
+        expected = evaluation.load_ground_truth(target)
+        generated = evaluation.collect_generated(target)
         assert set(expected) - set(generated) == set(), "有该测却没生成的用例"
         assert set(generated) - set(expected) == set(), "生成了标注集以外的用例"
         assert len(expected) == 41

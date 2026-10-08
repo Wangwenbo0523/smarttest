@@ -7,6 +7,8 @@
 输入一份 OpenAPI 设计契约，自动产出可执行、可维护的 pytest 测试套件，
 执行后自动完成失败归因与质量度量。
 
+> 一页看完成果（含简历写法与 60 秒验证路径）：[docs/RESULTS.md](docs/RESULTS.md)
+
 ---
 
 ## 验证结果（可复现）
@@ -97,10 +99,18 @@ SmartTest 把这件事拆成三层，每层用最适合的方式做：
 ## 快速开始
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt      # 或 pip install -e ".[test]"（可编辑安装 + 命令行入口）
 
 python run_demo.py        # 命令行：跑一遍完整流水线并打印质量报告
 python run_demo_app.py    # 演示界面：浏览器里跑同一条流水线（默认 http://127.0.0.1:8500）
+```
+
+装了包之后有统一入口（与上面的脚本完全等价，只是更顺手）：
+
+```bash
+smarttest targets                       # 列出已登记的靶场
+smarttest run --target users            # 跑指定靶场：生成 -> 执行 -> 归因 -> 报告
+smarttest eval --target articles        # 只跑用例生成质量评测
 ```
 
 流水线：
@@ -174,11 +184,12 @@ http://127.0.0.1:8500/?auto=1&mode=buggy&llm=1&tab=defects # 真实模型跑完�
 
 ## CI 质量门禁
 
-每次 push / PR 都会跑十二道门禁（`.github/workflows/quality-gate.yml`）：
+每次 push / PR 都会跑十三道门禁（`.github/workflows/quality-gate.yml`）：
 
 | 门禁 | 命令 | 卡住什么 |
 |---|---|---|
 | 规则引擎单测 | `python -m pytest -q` | 取值构造、边界规则、$ref 解析被改坏 |
+| 单元测试覆盖率 | `python -m pytest --cov=smarttest --cov-fail-under=95` | 新增代码没有测试，覆盖率悄悄回退 |
 | 缺陷检出 | `python run_demo.py --target-mode buggy --expect-defects 4` | 规则引擎漏报或误报 |
 | 零误报自证 | `python run_demo.py --target-mode fixed --expect-defects 0` | 修复后仍报出的假阳性 |
 | 生成质量 | `python run_evals.py --min-recall 100 --min-precision 100` | 覆盖率或精确率回退 |
@@ -196,7 +207,7 @@ http://127.0.0.1:8500/?auto=1&mode=buggy&llm=1&tab=defects # 真实模型跑完�
 在团队里的结局是一样的：没人看。
 
 端到端门禁的结论是汇总的（「4 个缺陷、召回 100%」），定位不到是哪条规则坏了，
-所以底下补了一层 `tests/`（184 条单元测试），把取值构造、边界规则、
+所以底下补了一层 `tests/`（239 条单元测试，核心模块覆盖率 98%），把取值构造、边界规则、
 资源引用字段的接受侧抑制、以及 `$ref` 解析逐条钉住，并留了一组黄金用例清单：
 规则有意变更时清单会显示 diff，无意改坏时测试直接失败。
 失败归因与度量这两个模块决定「报出来的算不算缺陷」和「报告里的数字对不对」，
@@ -547,7 +558,7 @@ schema 里推导不出来的用例补了出来；代价是上面这 9 类问题�
 - **泛化验证目前覆盖 3 个契约**（订单 / 用户 / 内容），形态分别落在请求头、枚举、
   嵌套对象、数组、查询参数上。「三个领域都成立」比「一个领域成立」强得多，
   但还不是「任意契约都成立」；继续加靶场这件事本身没有终点。
-- **CI 门禁已落地为 `.github/workflows/quality-gate.yml`**（12 道门禁，见上文），
+- **CI 门禁已落地为 `.github/workflows/quality-gate.yml`**（13 道门禁，见上文），
   但 Allure 报告未接入，当前用 junit-xml + Markdown。
 - **LLM 通路已用真实模型（DeepSeek）跑通完整流程**，缺陷版报 4 个 / 修复版报 0 个、假阳性 0；
   `tools/verify_semantic.py` 保留假模型服务，因为回归需要确定性输入 ——
@@ -566,7 +577,7 @@ schema 里推导不出来的用例补了出来；代价是上面这 9 类问题�
 
 1. ~~用真实模型跑一轮语义增强，对比规则推导的场景质量~~ 已完成（见「真实模型实测」）
 2. ~~把质量门禁推上 GitHub Actions，PR 触发回归 + 评测跑分~~
-   已完成；~~补单元测试~~ 已完成（`tests/`，184 条：规则引擎、解析器、
+   已完成；~~补单元测试~~ 已完成（`tests/`，239 条：规则引擎、解析器、
    失败归因、度量，见「CI 质量门禁」）
 3. ~~Demo 界面~~ 已完成（`python run_demo_app.py`，见「演示界面」）；剩余 Allure 报告
 4. 测试数据按需造数，替换静态字典
